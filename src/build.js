@@ -61,6 +61,21 @@ SELECT t.date, t.geo, t.keyword, t.search_volume_num, t.search_volume_raw,
  WHERE t.rn = 1
  ORDER BY t.geo, t.date DESC, t.search_volume_num DESC`;
 
+// 近 48h 的原始快照（不做当日峰值合并），用于 WW 首页按 4h 采集桶聚合。
+// 每个桶取所有 geo 该 4h 窗口内的快照，跨 geo 按 keyword 去重（取 volume 最高）。
+const RECENT_BUCKETS_SQL = `
+SELECT s.observed_at, s.geo, s.query AS keyword,
+       s.search_volume AS search_volume_num,
+       s.search_volume_label AS search_volume_raw,
+       CAST(strftime('%s', s.started_at) AS INTEGER) AS started_at,
+       s.picture, s.news_json, s.explore_url,
+       i.intro AS intro, i.intro_en AS intro_en
+  FROM trend_snapshots s
+  LEFT JOIN keyword_intro i
+    ON i.keyword = s.query AND i.geo = s.geo
+ WHERE s.observed_at >= ?
+ ORDER BY s.observed_at DESC, s.search_volume DESC`;
+
 // CLI ----------------------------------------------------------------------
 
 const args = process.argv.slice(2);
@@ -114,24 +129,27 @@ for (const [geo, m] of byGeoDate.entries()) {
   latestDate.set(geo, dates[0]);
 }
 
-// 2. Home page — aggregated global TOP 100 --------------------------------
-// WW 无法直接抓取（google-trends-now 对 geo='' 返回 0 条）。改为聚合所有可抓取
-// geo 各自「最新日期」的峰值快照：同一关键词跨 geo 出现时取 volume 最高那条，
-// 按搜索量降序取 TOP 100，作为全球热搜静态首页。每次 build 重新生成，运行时
-// 直接发静态 HTML，不再在线查 D1。
-const globalItems = aggregateGlobal(byGeoDate, latestDate, 100);
-const globalDate = globalItems.length
-  ? globalItems[0].date
-  : new Date().toISOString().slice(0, 10);
-// WW 历史日期 = 所有 geo 日期的并集（供首页 datebar 跳转 /geo/WW/{date}.html）
-const wwDates = [...new Set(
-  [...byGeoDate.values()].flatMap((m) => [...m.keys()])
-)].sort((a, b) => (a < b ? 1 : -1));
+// 2. Home page — Worldwide, with per-bucket time-ago sections ---------------
+// WW 无法直接抓取。改为按 4h 采集桶聚合：每个桶取所有 geo 该 4h 窗口内的快照，
+// 跨 geo 按 keyword 去重（取 volume 最高），按搜索量降序。
+// 首页展示「最新桶」TOP N 作为主列表，其后叠加最近若干桶（4h ago / 8h ago /
+// ... / Yesterday）作为 time-ago 区块，再用 datebar 链接到更早的日期页。
+const wwHome = await buildWwHomepage(byGeoDate);
 await maybeWrite(
   join(OUT, 'index.html'),
-  homePage({ date: globalDate, items: globalItems, geoCode: 'WW', availableDates: wwDates }),
+  homePage({
+    date: wwHome.latestDate,
+    items: wwHome.latestItems,
+    geoCode: 'WW',
+    availableDates: wwHome.wwDates,
+    latestTime: wwHome.latestTime,
+    latestTimeIso: wwHome.latestTimeIso,
+    sections: wwHome.agoSections,
+  }),
 );
-console.log(`  WW: aggregated ${globalItems.length} global trends (top 100), ${wwDates.length} historical dates`);
+console.log(
+  `  WW: ${wwHome.latestItems.length} latest + ${wwHome.agoSections.length} time-ago sections, ${wwHome.wwDates.length} historical dates`,
+);
 
 // 2b. Static content pages
 await maybeWrite(join(OUT, 'about.html'), aboutPage());
@@ -212,22 +230,65 @@ function sha1(input) {
   return createHash('sha1').update(input).digest('hex');
 }
 
-// 聚合所有可抓取 geo（排除 WW）各自「最新日期」的峰值快照，按 normalized keyword
-// 跨 geo 去重（取 volume 最高那条），按搜索量降序取 TOP N，作为全球热搜。
-// 复用已加载的 byGeoDate，不额外查 D1。
-function aggregateGlobal(byGeoDate, latestDate, topN) {
-  /** @type {object[]} */
-  const all = [];
-  for (const [geo, m] of byGeoDate.entries()) {
-    if (geo === 'WW') continue;
-    const date = latestDate.get(geo);
-    if (!date) continue;
-    const items = m.get(date);
-    if (Array.isArray(items)) all.push(...items);
+// 按 4h UTC 桶聚合 WW 首页。返回：
+//   latestItems  — 最新桶 TOP N（首页主列表）
+//   latestTime   — 最新桶内最大 observed_at，精确到分，如 "2026-08-01 18:35"
+//   latestTimeIso— 同上的 ISO 形式（供前端按访问者时区重写）
+//   latestDate   — 最新桶的本地日期（YYYY-MM-DD，供 datebar 高亮）
+//   agoSections  — 最近若干更早桶，每桶 TOP M，label 为 "4 hours ago" … "Yesterday"
+//   wwDates      — 所有 geo 日期并集（供 datebar 跳转更早日期）
+async function buildWwHomepage(byGeoDate) {
+  const cutoff = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+  const rows = await queryAll(RECENT_BUCKETS_SQL, [cutoff]);
+
+  // 按 4h 桶分组（对齐 cron 0/4/8/12/16/20 UTC）
+  const byBucket = new Map();
+  for (const r of rows) {
+    const key = bucketKey(r.observed_at);
+    if (!byBucket.has(key)) byBucket.set(key, []);
+    byBucket.get(key).push(r);
+  }
+  const bucketKeys = [...byBucket.keys()].sort((a, b) => (a < b ? 1 : -1));
+
+  // 每个桶聚合 WW（跨 geo 按 keyword 去重，取 volume 最高）
+  const perBucket = bucketKeys.map((k) => {
+    const raw = byBucket.get(k);
+    const latestObs = raw.map((r) => r.observed_at).sort().pop();
+    return { bucketKey: k, latestObs, items: aggregateWwBucket(raw, 100) };
+  });
+
+  const latest = perBucket[0];
+  const latestItems = latest
+    ? latest.items.slice(0, 50).map((it, i) => ({ ...it, rank: i + 1 }))
+    : [];
+  const latestTimeIso = latest?.latestObs ?? new Date().toISOString();
+  const latestTime = latestTimeIso.slice(0, 16).replace('T', ' ');
+  const latestDate = latest ? latest.bucketKey.slice(0, 10) : latestTime.slice(0, 10);
+
+  // 最近 6 个更早桶 → time-ago 区块（4h/8h/12h/16h/20h/24h ago，24h 标 Yesterday）
+  const agoSections = [];
+  for (let off = 1; off <= 6; off += 1) {
+    const b = perBucket[off];
+    if (!b) break;
+    const hours = off * 4;
+    const label = hours >= 24 ? 'Yesterday' : `${hours} hours ago`;
+    const items = b.items.slice(0, 10).map((it, i) => ({ ...it, rank: i + 1 }));
+    agoSections.push({ label, items });
   }
 
+  const wwDates = [...new Set(
+    [...byGeoDate.values()].flatMap((m) => [...m.keys()])
+  )].sort((a, b) => (a < b ? 1 : -1));
+
+  return { latestItems, latestTime, latestTimeIso, latestDate, agoSections, wwDates };
+}
+
+// 单个 4h 桶内跨 geo 聚合 WW：按 normalized keyword 去重（取 volume 最高），
+// 按搜索量降序取 TOP N。统一英文 summary（intro_en，回退 intro）。
+function aggregateWwBucket(rows, topN) {
   const byKey = new Map();
-  for (const it of all) {
+  for (const it of rows) {
+    if (it.geo === 'WW') continue;
     const key = (it.keyword || '').toString().toLowerCase().trim();
     if (!key) continue;
     const prev = byKey.get(key);
@@ -235,11 +296,21 @@ function aggregateGlobal(byGeoDate, latestDate, topN) {
       byKey.set(key, it);
     }
   }
-
   return [...byKey.values()]
     .sort((a, b) => (b.search_volume_num ?? 0) - (a.search_volume_num ?? 0))
     .slice(0, topN)
-    // WW 首页统一英文 summary：优先 intro_en，回退 intro。
-    // keyword 仍保留原始语言（trendCard 直接用 t.keyword 渲染）。
-    .map((it, i) => ({ ...it, rank: i + 1, intro: it.intro_en || it.intro || null }));
+    .map((it) => ({ ...it, intro: it.intro_en || it.intro || null }));
+}
+
+// observed_at(ISO) → 4h 对齐的桶键 "YYYY-MM-DD HH:00"（UTC）。
+// cron 在 0/4/8/12/16/20 UTC 触发，各 geo 的 observed_at 落在对应 4h 窗口内。
+function bucketKey(observedAtIso) {
+  const d = new Date(observedAtIso);
+  const h = d.getUTCHours();
+  const bh = h - (h % 4);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const hh = String(bh).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:00`;
 }

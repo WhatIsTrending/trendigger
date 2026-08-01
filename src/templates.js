@@ -12,6 +12,14 @@ const LANG_NATIVE = {
   es: 'Español', ru: 'Русский', 'pt-BR': 'Português', id: 'Bahasa Indonesia',
   th: 'ไทย', vi: 'Tiếng Việt', ms: 'Bahasa Melayu', 'zh-HK': '繁體中文',
   tr: 'Türkçe', ar: 'العربية',
+  sq: 'Shqip', pt: 'Português', hy: 'Հայերեն', az: 'Azərbaycanca', bn: 'বাংলা',
+  be: 'Беларуская', nl: 'Nederlands', bs: 'Bosanski', bg: 'Български', km: 'ខ្មែរ',
+  hr: 'Hrvatski', cs: 'Čeština', da: 'Dansk', et: 'Eesti', am: 'አማርኛ', fi: 'Suomi',
+  el: 'Ελληνικά', ka: 'ქართული', hu: 'Magyar', fa: 'فارسی', he: 'עברית',
+  it: 'Italiano', kk: 'Қазақша', ky: 'Кыргызча', lv: 'Latviešu', lt: 'Lietuvių',
+  pl: 'Polski', ro: 'Română', no: 'Norsk', ur: 'اردو', sk: 'Slovenčina',
+  sl: 'Slovenščina', sv: 'Svenska', sr: 'Српски', 'zh-TW': '繁體中文', tk: 'Türkmen',
+  uk: 'Українська',
 };
 
 // ---------------------------------------------------------------------------
@@ -165,7 +173,7 @@ export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canoni
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escape(title)} · Trendigger</title>
-<meta name="description" content="Historical Google Trends with AI-written summaries for 23 regions.">
+<meta name="description" content="Historical Google Trends with AI-written summaries for ${GEOS.length - 1}+ countries.">
 <meta name="google-adsense-account" content="ca-pub-4233507772773094">
 <link rel="stylesheet" href="${assetsPrefix}assets/style.css">
 ${canonicalTag}
@@ -188,7 +196,7 @@ ${alternateTags}
     <button class="sidebar-close" id="sidebarClose" aria-label="Close menu">&times;</button>
   </div>
   <div class="sidebar-intro">
-    Historical Google Trends with AI summaries for Worldwide + 23 countries — updated every 4h.
+    Historical Google Trends with AI summaries for Worldwide + ${GEOS.length - 1} countries — updated every 4h.
   </div>
   <nav class="sidebar-nav">
     <a href="${assetsPrefix}index.html">Home</a>
@@ -249,6 +257,19 @@ ${bodyHtml}
       var s = d.toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', timeZone: tz });
       el.textContent = 'started ' + s;
     });
+  } catch(e) {}
+})();
+// 把首页 "latest YYYY-MM-DD HH:MM UTC" 按访问者本地时区重写
+(function(){
+  var el = document.querySelector('[data-latest-utc]');
+  if(!el) return;
+  try {
+    var iso = el.getAttribute('data-latest-utc');
+    if(!iso) return;
+    var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+    var d = new Date(iso);
+    var s = d.toLocaleString(undefined, { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', timeZone: tz });
+    el.textContent = s;
   } catch(e) {}
 })();
 </script>
@@ -334,9 +355,7 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
       </div>
     </div>
   </div>
-  <div class="intro ${t.intro ? '' : 'no-intro'}">
-    ${t.intro ? escape(t.intro) : 'Summary not available yet.'}
-  </div>
+  ${t.intro ? `<div class="intro">${escape(t.intro)}</div>` : ''}
   ${newsHtml}
   <div class="footer">
     <a href="${escAttr(detailHref)}">View history &rarr;</a>
@@ -649,9 +668,7 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang }) {
   ${langSwitch}
   ${shareButtonsHtml}
 
-  <div class="detail-intro">
-    <p>${intro ? escape(intro) : '<em>Summary not available yet.</em>'}</p>
-  </div>
+  ${intro ? `<div class="detail-intro"><p>${escape(intro)}</p></div>` : ''}
 
   <div class="stats">
     <div class="stat"><div class="label">Peak volume</div><div class="value">${escape(formatInt(peak))}</div></div>
@@ -682,11 +699,14 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang }) {
 /**
  * @param {object} o
  * @param {string} o.date
- * @param {object[]} o.items - WW peak snapshots (already ranked 1..N by volume)
+ * @param {object[]} o.items - WW latest-bucket snapshots (already ranked 1..N by volume)
  * @param {string[]} [o.availableDates] - WW historical dates for datebar (most recent first)
  * @param {string} [o.geoCode='WW'] - which geo this home view represents
+ * @param {string} [o.latestTime] - 精确到分的最新更新时间，如 "2026-08-01 18:35"
+ * @param {string} [o.latestTimeIso] - 同上的 ISO 形式（供前端按时区重写）
+ * @param {{label:string, items:object[]}[]} [o.sections] - 更早的 time-ago 区块
  */
-export function homePage({ date, items, availableDates = [], geoCode = 'WW' }) {
+export function homePage({ date, items, availableDates = [], geoCode = 'WW', latestTime, latestTimeIso, sections = [] }) {
   const geoMeta = GEO_BY_CODE[geoCode] || GEO_BY_CODE.WW;
   const isWW = geoCode === 'WW';
   // WW 永远是英文 summary 视图
@@ -697,33 +717,24 @@ export function homePage({ date, items, availableDates = [], geoCode = 'WW' }) {
     ? buildDateNav(availableDates, date, true, 'geo/WW/')
     : '';
 
-  // 前 100 直接展示（不折叠）；超过 100 用 Show more 懒加载
-  const showCount = 100;
-  const hasMore = items.length > showCount;
-  const visible = hasMore ? items.slice(0, showCount) : items;
-  const hidden = hasMore ? items.slice(showCount) : [];
-
-  // WW 卡片：keyword 用原始语言，但 summary 是英文 → 链接到英文 keyword 页
-  const cards = visible
+  // 最新桶主列表
+  const cards = items
     .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
     .join('\n');
-  const moreCards = hasMore
-    ? hidden.map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang })).join('\n')
-    : '';
-  const moreSection = hasMore
-    ? `<div class="more-trends" id="more-trends" style="display:none;">${moreCards}</div>
-       <button class="btn-show-more" onclick="(function(btn){
-         var more = document.getElementById('more-trends');
-         if (more.style.display === 'none') {
-           more.style.display = 'contents';
-           btn.textContent = 'Show less';
-         } else {
-           more.style.display = 'none';
-           btn.textContent = 'Show all ${items.length} trends';
-           window.scrollTo({top: btn.offsetTop - 100, behavior:'smooth'});
-         }
-       })(this)">Show all ${items.length} trends &darr;</button>`
-    : '';
+
+  // 更早的 time-ago 区块（4h ago / 8h ago / ... / Yesterday）
+  const agoHtml = sections.map((sec) => {
+    const secCards = sec.items
+      .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
+      .join('\n');
+    return `<h2 class="section-title">${escape(sec.label)}</h2>
+  <div class="trend-grid">${secCards}</div>`;
+  }).join('\n');
+
+  // latest 时间：优先用 JS 按访问者时区重写，回退到 UTC 字符串
+  const latestBadge = latestTime
+    ? `<strong data-latest-utc="${escAttr(latestTimeIso || '')}">${escape(latestTime)} UTC</strong>`
+    : `<strong>${escape(date)}</strong>`;
 
   const titleFlag = isWW ? '🌐' : flagEmoji(geoCode);
   const body = `
@@ -732,14 +743,14 @@ export function homePage({ date, items, availableDates = [], geoCode = 'WW' }) {
     <span>${escape(geoMeta.name)} Google Trends</span>
   </h1>
   <p class="page-sub">
-    Top ${items.length} trending searches by volume · updated every 4h · latest: <strong>${escape(date)}</strong>.
+    Top ${items.length} trending searches by volume · updated every 4h · latest: ${latestBadge}.
   </p>
   <nav class="region-bar" aria-label="Switch region">${regionBar(geoCode, '')}</nav>
   ${dateNav}
   <div class="trend-grid">
     ${cards || '<p>No worldwide data yet. Collection runs every 4 hours.</p>'}
   </div>
-  ${moreSection}`;
+  ${agoHtml}`;
 
   return layout({
     title: isWW ? 'Worldwide Google Trends — TOP 100' : `${geoMeta.name} Google Trends`,
@@ -760,7 +771,7 @@ export function aboutPage() {
     <h1>About Trend&middot;igger</h1>
     <p>
       Trend&middot;igger tracks <strong>Google Trends</strong> search interest
-      across a Worldwide view plus 23 countries. Every 4 hours we collect the
+      across a Worldwide view plus ${GEOS.length - 1} countries. Every 4 hours we collect the
       latest trending searches, rank them by volume, and generate AI-written
       summaries to give you instant context on what the world is searching for.
     </p>

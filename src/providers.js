@@ -151,6 +151,14 @@ const LANG_LABEL = {
   'zh-HK': 'Traditional Chinese (Hong Kong)',
   tr: 'Turkish',
   ar: 'Arabic',
+  sq: 'Albanian', pt: 'Portuguese', hy: 'Armenian', az: 'Azerbaijani',
+  bn: 'Bengali', be: 'Belarusian', nl: 'Dutch', bs: 'Bosnian', bg: 'Bulgarian',
+  km: 'Khmer', hr: 'Croatian', cs: 'Czech', da: 'Danish', et: 'Estonian',
+  am: 'Amharic', fi: 'Finnish', el: 'Greek', ka: 'Georgian', hu: 'Hungarian',
+  fa: 'Persian', he: 'Hebrew', it: 'Italian', kk: 'Kazakh', ky: 'Kyrgyz',
+  lv: 'Latvian', lt: 'Lithuanian', pl: 'Polish', ro: 'Romanian', no: 'Norwegian',
+  ur: 'Urdu', sk: 'Slovak', sl: 'Slovenian', sv: 'Swedish', sr: 'Serbian',
+  'zh-TW': 'Traditional Chinese (Taiwan)', tk: 'Turkmen', uk: 'Ukrainian',
 };
 
 async function loadCfAccountId() {

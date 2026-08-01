@@ -30,7 +30,8 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 125 个 geo，每个要做 fetch + withNews 新闻解析，留足余量。
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -79,7 +80,8 @@ jobs:
 
       - name: Collect (fetch Google Trends via google-trends-now for all geos → D1)
         if: ${{ inputs.skip_collect != true }}
-        run: node collect-trends.js
+        # 125 个 geo：with-news 降到 10，避免单轮耗时过长撞上 4h 节奏。
+        run: node collect-trends.js --with-news 10 --delay-ms 1200
 
       - name: Enrich (generate AI summaries for new keywords)
         if: ${{ inputs.skip_enrich != true }}
