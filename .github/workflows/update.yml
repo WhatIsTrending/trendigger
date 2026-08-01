@@ -49,10 +49,17 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_KEY_FUNCTIONS }}
 
-      - name: Checkout (with submodules)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: true
+        # 不用 submodules:true：actions/checkout 会把 git@github.com: 重写为
+        # HTTPS + GITHUB_TOKEN，而 GITHUB_TOKEN 无权访问跨仓库 private submodule
+        # （报 "Repository not found"）。下一步用 SSH 手动拉取。
+
+      - name: Init private submodule via SSH
+        # 移除 actions/checkout 设置的 insteadOf，让 submodule 走 SSH + ssh-agent
+        run: |
+          git config --global --unset-all "url.https://github.com/.insteadOf" || true
+          git submodule update --init --recursive
 
       - name: Setup Node
         uses: actions/setup-node@v4
