@@ -51,6 +51,17 @@ function flagEmoji(code) {
   );
 }
 
+// HTML 上下文用的国旗：用 flag-icons 的 SVG（跨平台一致，Windows 也能正常显示）。
+// WW 没有 ISO 国旗，回退为 🌐 emoji；未知 code 回退为 emoji 旗。
+// 注意：<select><option> 只能放纯文本，那里仍用 flagEmoji()。
+function flagHtml(code, title) {
+  if (code === 'WW') return '<span class="fi-emoji">🌐</span>';
+  if (!code || code.length !== 2) return '<span class="fi-emoji">🏳️</span>';
+  const lc = code.toLowerCase();
+  const t = title ? ` title="${escAttr(title)}"` : '';
+  return `<span class="fi fi-${lc}"${t}></span>`;
+}
+
 function formatInt(n) {
   if (n == null || !Number.isFinite(n)) return 'n/a';
   if (n >= 1e6) return (n / 1e6).toFixed(n % 1e6 === 0 ? 0 : 1) + 'M+';
@@ -176,6 +187,7 @@ export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canoni
 <meta name="description" content="Historical Google Trends with AI-written summaries for ${GEOS.length - 1}+ countries.">
 <meta name="google-adsense-account" content="ca-pub-4233507772773094">
 <link rel="stylesheet" href="${assetsPrefix}assets/style.css">
+<link rel="stylesheet" href="${assetsPrefix}assets/flag-icons/css/flag-icons.min.css">
 ${canonicalTag}
 ${alternateTags}
 <!-- Google tag (gtag.js) -->
@@ -309,7 +321,7 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
   // WW 聚合页上每条 keyword 来自不同 geo，显示来源旗帜方便区分
   // （showGeoFlag 仅在 WW 页传 true；普通 geo 页传 false 不显示）
   const sourceFlag = showGeoFlag && t.geo
-    ? `<span class="geo-flag" title="${escape(t.geo)}">${flagEmoji(t.geo)}</span>`
+    ? `<span class="geo-flag" title="${escape(t.geo)}">${flagHtml(t.geo)}</span>`
     : '';
 
   const newsHtml = news.length
@@ -390,7 +402,7 @@ function safeJson(s, fb) { try { return JSON.parse(s); } catch { return fb; } }
  */
 export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang }) {
   const assetsPrefix = '../../';
-  const flag = flagEmoji(geoMeta.code);
+  const flag = flagHtml(geoMeta.code, geoMeta.name);
   const renderLang = lang || geoMeta.lang;
 
   // canonical / hreflang basePath：latest 用 /geo/XX/，日期页用 /geo/XX/date.html
@@ -470,7 +482,7 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang 
  */
 function regionBar(currentGeoCode, assetsPrefix) {
   return GEOS.map((g) => {
-    const flag = g.code === 'WW' ? '🌐' : flagEmoji(g.code);
+    const flag = flagHtml(g.code, g.name);
     const href = g.code === 'WW'
       ? `${assetsPrefix}index.html`
       : `${assetsPrefix}geo/${g.code}/index.html`;
@@ -536,7 +548,7 @@ function buildDateNav(dates, current, isLatest, dateHrefPrefix = '', lang) {
 
 export function geoArchivePage({ geoMeta, dates }) {
   const assetsPrefix = '../../';
-  const flag = flagEmoji(geoMeta.code);
+  const flag = flagHtml(geoMeta.code, geoMeta.name);
   const body = `
   <h1 class="page-title">
     <span class="flag">${flag}</span>
@@ -569,7 +581,7 @@ export function geoArchivePage({ geoMeta, dates }) {
  */
 export function keywordPage({ geoMeta, keyword, intro, history, lang }) {
   const assetsPrefix = '../../../';
-  const flag = flagEmoji(geoMeta.code);
+  const flag = flagHtml(geoMeta.code, geoMeta.name);
   const renderLang = lang || geoMeta.lang;
   const latest = history[0];
 
@@ -736,7 +748,7 @@ export function homePage({ date, items, availableDates = [], geoCode = 'WW', lat
     ? `<strong data-latest-utc="${escAttr(latestTimeIso || '')}">${escape(latestTime)} UTC</strong>`
     : `<strong>${escape(date)}</strong>`;
 
-  const titleFlag = isWW ? '🌐' : flagEmoji(geoCode);
+  const titleFlag = flagHtml(geoCode, geoMeta.name);
   const body = `
   <h1 class="page-title">
     <span class="flag">${titleFlag}</span>

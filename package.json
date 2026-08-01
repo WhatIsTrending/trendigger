@@ -25,6 +25,7 @@
     "ci:update": "node collect-trends.js && node src/enrich.js && node src/prune.js && node src/build.js"
   },
   "dependencies": {
+    "flag-icons": "^7.5.0",
     "google-trends-now": "^1.1.1"
   },
   "engines": {

@@ -90,6 +90,10 @@ h1.page-title {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
 }
 h1.page-title .flag { font-size: 28px; }
+/* flag-icons SVG 国旗：跨平台一致显示（Windows 也能正常出图）。
+   .fi 尺寸继承自父级 font-size；这里只做对齐。 */
+.fi, .fi-emoji { vertical-align: middle; line-height: 1; }
+.geo-flag .fi, .geo-flag .fi-emoji { vertical-align: -2px; }
 .page-sub {
   color: var(--text-muted);
   font-size: 14px;
