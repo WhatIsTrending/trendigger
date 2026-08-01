@@ -29,6 +29,12 @@ import { generateIntro } from './providers.js';
 import { translate } from './translate.js';
 import { GEOS, GEO_BY_CODE } from './geos.js';
 
+// 英语 geo 中仍需把 intro 翻译成 intro_en 的特例。
+// 原因：snippet provider 不保证返回英文（常返回新闻源语种，如 real madrid 的西班牙语），
+// 这些 en geo 的 intro_en 为空，页面会显示外语。IN 暂列入；其余 en geo 不动。
+// 这些 geo 始终走 Google 免费翻译，不消耗 Azure 配额。
+const EN_GEOS_NEED_EN_INTRO = new Set(['IN']);
+
 const args = process.argv.slice(2);
 
 const topRaw = argOf('--top');
@@ -214,6 +220,11 @@ async function collectCandidates(geos, date, force, onlyLang) {
 async function collectBackfillEn(geos) {
   const geoList = geos.map((g) => `'${g.code}'`).join(',');
   // LEFT JOIN trend_snapshots 取每个 (keyword, geo) 的历史峰值 volume，用于 top-N 分层。
+  // WHERE 包含 EN_GEOS_NEED_EN_INTRO（如 IN）——这些英语 geo 也需要回填 intro_en。
+  const enNeedList = [...EN_GEOS_NEED_EN_INTRO].map((g) => `'${g}'`).join(',');
+  const langClause = enNeedList
+    ? `(i.lang != 'en' OR i.geo IN (${enNeedList}))`
+    : `i.lang != 'en'`;
   const rows = await queryAll(
     `SELECT i.keyword, i.geo, i.lang, i.intro, COALESCE(v.vol, 0) AS vol
        FROM keyword_intro i
@@ -221,7 +232,7 @@ async function collectBackfillEn(geos) {
          SELECT query AS keyword, geo, MAX(search_volume) AS vol
            FROM trend_snapshots GROUP BY query, geo
        ) v ON v.keyword = i.keyword AND v.geo = i.geo
-      WHERE i.lang != 'en' AND i.intro IS NOT NULL AND i.intro_en IS NULL
+      WHERE ${langClause} AND i.intro IS NOT NULL AND i.intro_en IS NULL
         AND i.geo IN (${geoList})
       ORDER BY i.geo ASC, vol DESC, i.keyword ASC`,
   );
@@ -261,6 +272,8 @@ function assignTiers(candidates, azureTopN) {
     if (c.geo !== curGeo) { curGeo = c.geo; rank = 0; }
     rank++;
     if (!c.doEn) continue;
+    // 英语 geo 特例（如 IN）始终走 Google 免费，不消耗 Azure 配额。
+    if (EN_GEOS_NEED_EN_INTRO.has(c.geo)) { c.tier = 'google'; continue; }
     c.tier = rank <= azureTopN ? 'azure' : 'google';
   }
 }
@@ -276,16 +289,18 @@ function assignTiers(candidates, azureTopN) {
  */
 function makeCandidate(base, geoMeta, intro, introEn, introLang, force) {
   const localLang = geoMeta?.lang ?? 'en';
+  // 非英语 geo，或 EN_GEOS_NEED_EN_INTRO 中的英语 geo（如 IN），都需要 intro_en。
+  const needEn = localLang !== 'en' || EN_GEOS_NEED_EN_INTRO.has(base.geo);
   let doLocal = false;
   let doEn = false;
   if (force) {
     doLocal = true;
-    doEn = localLang !== 'en';
+    doEn = needEn;
   } else if (introLang == null || intro == null) {
-    // 没有缓存行或当地语言缺失：补齐当地语言（+ 英文翻译，如果非 en）
+    // 没有缓存行或当地语言缺失：补齐当地语言（+ 英文翻译，如果 needEn）
     doLocal = true;
-    doEn = localLang !== 'en';
-  } else if (localLang !== 'en' && introEn == null) {
+    doEn = needEn;
+  } else if (needEn && introEn == null) {
     // 当地语言已有，只缺英文 → 翻译
     doEn = true;
   }
@@ -338,10 +353,12 @@ async function runOne(c) {
     }
   }
 
-  // 当地语言 = en 时：生成的英文就是当地语言版本，存进 intro
+  // 当地语言 = en 时：生成的英文就是当地语言版本，存进 intro。
+  // 但 EN_GEOS_NEED_EN_INTRO（如 IN）例外——它们的 intro 可能是外语，
+  // 需要单独存英文翻译到 intro_en，渲染时优先取 intro_en。
   let introOut = localIntro;
   let introEnOut = enIntro;
-  if (localLang === 'en') {
+  if (localLang === 'en' && !EN_GEOS_NEED_EN_INTRO.has(c.geo)) {
     if (introOut == null) introOut = enIntro;
     introEnOut = null; // en geo 不单独存英文，渲染时回退到 intro
   }
