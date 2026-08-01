@@ -8,15 +8,21 @@
 //   node src/enrich.js --top 50              # 每个 geo 只处理 volume 前 50（默认 50，0=不限）
 //   node src/enrich.js --only-lang en        # 只补英文版本（翻译现有当地 intro）
 //   node src/enrich.js --only-lang local     # 只补当地语言版本
+//   node src/enrich.js --backfill-en         # 扫描所有缺 intro_en 的历史行并翻译
+//   node src/enrich.js --azure-top 10        # 每个非英语 geo 前 10 走 Azure，其余走 Google（默认 10）
 //
 // 逻辑：
 //   1) 从 trend_snapshots 取当天每个 (geo, keyword) 的峰值快照（含 news_json）
 //   2) LEFT JOIN keyword_intro：判断还缺哪种语言
 //        - 当地语言（geoMeta.lang）缺失 → 生成当地语言
-//        - 当地语言非 en 且英文缺失     → 把当地 intro 翻译成英文（Azure Translator）
+//        - 当地语言非 en 且英文缺失     → 翻译当地 intro 成英文（分层路由）
 //        - 当地语言 = en 时只生成一份，存 intro，intro_en 留空（渲染时回退）
-//   3) COALESCE upsert：只更新本次生成/翻译过的字段，不覆盖已有的另一种语言
-//   4) 失败不阻断整轮，记录到日志
+//   3) 翻译分层（assignTiers）：每个非英语 geo 内按 volume 排序，
+//        top-N（--azure-top，默认 10）→ Azure Translator（高质量，免费层 2M 字符/月）
+//        其余                          → Google 免费 gtx 端点（与 googletrans 同源）
+//      英语 geo（lang='en'）不翻译。
+//   4) COALESCE upsert：只更新本次生成/翻译过的字段，不覆盖已有的另一种语言
+//   5) 失败不阻断整轮，记录到日志
 
 import { queryAll, executeBatch } from './db.js';
 import { generateIntro } from './providers.js';
@@ -36,6 +42,8 @@ const flags = {
   concurrency: Number(argOf('--concurrency') ?? 8) || 8,
   force: args.includes('--force'),
   onlyLang: onlyLangRaw ? onlyLangRaw.toLowerCase() : null,
+  backfillEn: args.includes('--backfill-en'),
+  azureTop: Number(argOf('--azure-top') ?? process.env.AZURE_TOP_N ?? 10) || 0,
 };
 
 function argOf(name) {
@@ -94,17 +102,30 @@ if (flags.keyword) {
 }
 
 // 批量模式
-const candidates = await collectCandidates(targetGeos, flags.date, flags.force, flags.onlyLang);
-const topped = flags.top > 0 ? applyTopPerGeo(candidates, flags.top) : candidates;
+const candidates = flags.backfillEn
+  ? await collectBackfillEn(targetGeos)
+  : await collectCandidates(targetGeos, flags.date, flags.force, flags.onlyLang);
+// 给每个 doEn 候选分配翻译分层：每个 geo 内按 volume 降序，top-N → azure，其余 → google。
+assignTiers(candidates, flags.azureTop);
+const topped = flags.top > 0 && !flags.backfillEn ? applyTopPerGeo(candidates, flags.top) : candidates;
 const list = flags.limit ? topped.slice(0, flags.limit) : topped;
 
+const tierCounts = list.reduce(
+  (acc, c) => { if (c.doEn && c.tier) acc[c.tier] = (acc[c.tier] || 0) + 1; return acc; },
+  { azure: 0, google: 0 },
+);
+
 console.log(
-  `Enrich: ${flags.date ? 'date=' + flags.date : 'latest per geo'}, geos=${targetGeos.map((g) => g.code).join(',')}` +
-    `, candidates=${candidates.length}` +
-    (flags.top > 0 ? `, top=${flags.top}/geo (${topped.length} after top)` : '') +
-    `, will process=${list.length}` +
-    (flags.force ? ' (force regen)' : '') +
-    (flags.onlyLang ? ` (only-lang=${flags.onlyLang})` : ''),
+  flags.backfillEn
+    ? `Backfill intro_en: geos=${targetGeos.map((g) => g.code).join(',')}` +
+      `, candidates=${candidates.length}, will process=${list.length}` +
+      ` (azure=${tierCounts.azure}, google=${tierCounts.google}, azure-top=${flags.azureTop || 'off'})`
+    : `Enrich: ${flags.date ? 'date=' + flags.date : 'latest per geo'}, geos=${targetGeos.map((g) => g.code).join(',')}` +
+      `, candidates=${candidates.length}` +
+      (flags.top > 0 ? `, top=${flags.top}/geo (${topped.length} after top)` : '') +
+      `, will process=${list.length} (azure=${tierCounts.azure}, google=${tierCounts.google}, azure-top=${flags.azureTop || 'off'})` +
+      (flags.force ? ' (force regen)' : '') +
+      (flags.onlyLang ? ` (only-lang=${flags.onlyLang})` : ''),
 );
 
 let ok = 0, fail = 0;
@@ -168,7 +189,7 @@ async function collectCandidates(geos, date, force, onlyLang) {
   for (const r of rows) {
     const geoMeta = GEO_BY_CODE[r.geo];
     const c = makeCandidate(
-      { keyword: r.keyword, geo: r.geo, news: safeJson(r.news_json, []) },
+      { keyword: r.keyword, geo: r.geo, news: safeJson(r.news_json, []), volume: r.search_volume || 0 },
       geoMeta,
       r.intro,
       r.intro_en,
@@ -184,6 +205,64 @@ async function collectCandidates(geos, date, force, onlyLang) {
     if (c.doLocal || c.doEn) out.push(c);
   }
   return out;
+}
+
+/**
+ * --backfill-en 模式：直接扫描 keyword_intro，把所有「有当地 intro、缺英文」的行
+ * 翻译补齐。不依赖 trend_snapshots 的日期范围，覆盖历史所有 keyword。
+ */
+async function collectBackfillEn(geos) {
+  const geoList = geos.map((g) => `'${g.code}'`).join(',');
+  // LEFT JOIN trend_snapshots 取每个 (keyword, geo) 的历史峰值 volume，用于 top-N 分层。
+  const rows = await queryAll(
+    `SELECT i.keyword, i.geo, i.lang, i.intro, COALESCE(v.vol, 0) AS vol
+       FROM keyword_intro i
+       LEFT JOIN (
+         SELECT query AS keyword, geo, MAX(search_volume) AS vol
+           FROM trend_snapshots GROUP BY query, geo
+       ) v ON v.keyword = i.keyword AND v.geo = i.geo
+      WHERE i.lang != 'en' AND i.intro IS NOT NULL AND i.intro_en IS NULL
+        AND i.geo IN (${geoList})
+      ORDER BY i.geo ASC, vol DESC, i.keyword ASC`,
+  );
+  const out = [];
+  for (const r of rows) {
+    const geoMeta = GEO_BY_CODE[r.geo];
+    const localLang = geoMeta?.lang ?? r.lang ?? 'en';
+    out.push({
+      keyword: r.keyword,
+      geo: r.geo,
+      news: [],
+      volume: r.vol || 0,
+      localLang,
+      doLocal: false,
+      doEn: true,
+      existingLocalIntro: r.intro,
+    });
+  }
+  return out;
+}
+
+/**
+ * 给候选分配翻译分层。候选须已按 geo ASC、volume DESC 排序。
+ * 每个 geo 内 volume 前 N 名（且需要翻译 doEn）→ 'azure'，其余 → 'google'。
+ * azureTopN <= 0 时全部走 google（省 Azure 配额）。
+ * 排名统计包含 doEn=false 的候选（它们占据 top-N 名额但不翻译），
+ * 这样「top-N」真正反映该 geo 热度排名。
+ */
+function assignTiers(candidates, azureTopN) {
+  if (azureTopN <= 0) {
+    for (const c of candidates) if (c.doEn) c.tier = 'google';
+    return;
+  }
+  let curGeo = null;
+  let rank = 0;
+  for (const c of candidates) {
+    if (c.geo !== curGeo) { curGeo = c.geo; rank = 0; }
+    rank++;
+    if (!c.doEn) continue;
+    c.tier = rank <= azureTopN ? 'azure' : 'google';
+  }
 }
 
 /**
@@ -242,18 +321,19 @@ async function runOne(c) {
 
   if (doEn) {
     // 非英语 geo：把当地语言 intro 翻译成英文，而不是再次调用 AI 生成。
-    // Azure 自动检测源语种，兼容混合语种 summary（如马来西亚英/马/中混排）。
+    // 分层：top-N 走 Azure（高质量），其余走 Google 免费 gtx 端点。
+    // 两个 provider 都自动检测源语种，兼容混合语种 summary（如马来西亚英/马/中混排）。
     const source = localIntro || existingLocalIntro;
     if (!source) {
       console.warn(`  ⚠ [${c.geo}] "${c.keyword}" skip en: no local intro to translate`);
     } else {
       try {
-        enIntro = await translate(source, { to: 'en' });
+        enIntro = await translate(source, { to: 'en', tier: c.tier });
         const preview = enIntro.length > 80 ? enIntro.slice(0, 80) + '…' : enIntro;
-        console.log(`  ✓ [${c.geo}] "${c.keyword}" (en·translate) — ${preview}`);
-        if (!model) model = 'azure-translate';
+        console.log(`  ✓ [${c.geo}] "${c.keyword}" (en·${c.tier}) — ${preview}`);
+        if (!model) model = c.tier === 'azure' ? 'azure-translate' : 'google-translate';
       } catch (err) {
-        console.warn(`  ⚠ [${c.geo}] "${c.keyword}" translate failed: ${err.message}`);
+        console.warn(`  ⚠ [${c.geo}] "${c.keyword}" translate failed (${c.tier}): ${err.message}`);
       }
     }
   }
