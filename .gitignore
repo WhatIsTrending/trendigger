@@ -1,0 +1,26 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+
+# Secrets — never commit
+gemini-key
+cloudflare-token
+cloudflare-account-id
+*.key
+
+# wrangler.toml 含 D1 database_id，由 CI 用 secret 注入；本地从 .example 复制
+wrangler.toml
+!wrangler.toml.example
+
+# Build output — generated HTML is not committed, but keep hand-written assets
+public/**
+!public/assets/
+!public/assets/**
+!public/robots.txt
+.wrangler/
+cloudflare-token
+local_db
+backup/

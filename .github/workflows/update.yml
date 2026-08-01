@@ -63,6 +63,13 @@ jobs:
       - name: Install deps
         run: npm ci
 
+      # wrangler.toml 不进仓库（含 D1 database_id），从模板 + secret 现场生成。
+      # db.js 调 `wrangler d1 execute` 需要它来把 database_name 解析成 id。
+      - name: Materialize wrangler.toml from secret
+        env:
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+        run: sed "s/__D1_DATABASE_ID__/${D1_DATABASE_ID}/" wrangler.toml.example > wrangler.toml
+
       - name: Collect (fetch Google Trends via google-trends-now for all geos → D1)
         if: ${{ inputs.skip_collect != true }}
         run: node collect-trends.js

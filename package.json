@@ -1,0 +1,36 @@
+{
+  "name": "trendigger",
+  "version": "0.0.1",
+  "description": "A historical Google Trends explorer with AI-generated summaries.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:init": "wrangler d1 execute trendigger-db --local --file=schema.sql",
+    "db:init:remote": "wrangler d1 execute trendigger-db --remote --file=schema.sql",
+    "db:reset": "rm -rf .wrangler/state && npm run db:init",
+    "backup": "node scripts/backup-d1.js",
+    "collect": "node collect-trends.js",
+    "collect:us": "node collect-trends.js --geos US",
+    "enrich": "node src/enrich.js",
+    "enrich:us": "node src/enrich.js US",
+    "prune": "node src/prune.js",
+    "build": "node src/build.js",
+    "build:full": "node src/build.js --full",
+    "build:clean": "node src/build.js --clean",
+    "serve": "npx --yes serve public -l 5173",
+    "query": "node src/query.js",
+    "query:stats": "node src/query.js --stats",
+    "query:log": "node src/query.js --log",
+    "deploy": "wrangler pages deploy public --project-name=trendigger-new --branch=main",
+    "ci:update": "node collect-trends.js && node src/enrich.js && node src/prune.js && node src/build.js"
+  },
+  "dependencies": {
+    "google-trends-now": "^1.1.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "wrangler": "^4.85.0"
+  }
+}

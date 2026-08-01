@@ -1,0 +1,11 @@
+name = "trendigger"
+compatibility_date = "2025-04-01"
+pages_build_output_dir = "public"
+
+# D1 数据库绑定。
+# 本地开发：cp wrangler.toml.example wrangler.toml，然后把 database_id
+# 换成真实值（CI 里由 D1_DATABASE_ID secret 注入，不进仓库）。
+[[d1_databases]]
+binding = "DB"
+database_name = "trendigger-db"
+database_id = "__D1_DATABASE_ID__"
