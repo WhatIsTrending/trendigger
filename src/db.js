@@ -21,6 +21,30 @@ import { randomUUID } from 'node:crypto';
 const REMOTE = process.env.D1_REMOTE === '1';
 const SCOPE = REMOTE ? '--remote' : '--local';
 
+// D1 偶发的瞬态错误，重试即可恢复。
+// "Not currently importing anything" 是 wrangler --file 的已知问题：
+// 上一次 import 的状态没清理干净，D1 认为没有 import 在进行中。
+// "Input file ... missing or invalid" 同属 import 状态卡死。
+// 详见 https://community.cloudflare.com/t/wrangler-import-error-not-currently-importing-anything/755655
+const TRANSIENT_ERROR_PATTERNS = [
+  'Not currently importing anything',
+  'D1 DB is overloaded',
+  'D1_INTERNAL_ERROR',
+  'Internal error while starting up D1 DB storage',
+];
+const IMPORT_STUCK_REGEX = /Input file .*\.sql missing or invalid/;
+const MAX_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 2000;
+
+function isTransientError(err) {
+  const msg = String(err?.message ?? '');
+  return TRANSIENT_ERROR_PATTERNS.some((p) => msg.includes(p)) || IMPORT_STUCK_REGEX.test(msg);
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 /**
  * 执行一条只读 SQL 并返回行数组。
  */
@@ -61,7 +85,27 @@ export async function ensureLocalDir() {
 
 // ---------------------------------------------------------------------------
 
-function runWrangler(args) {
+// 带重试的 wrangler 调用：对 D1 瞬态错误做指数退避重试。
+async function runWrangler(args) {
+  let lastErr;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    try {
+      return await runWranglerOnce(args);
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientError(err) || attempt === MAX_RETRIES) throw err;
+      const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
+      const firstLine = String(err.message ?? '').split('\n').find((l) => l.trim()) ?? '';
+      console.warn(
+        `wrangler transient error (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying in ${delay}ms: ${firstLine}`,
+      );
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
+function runWranglerOnce(args) {
   return new Promise((resolve, reject) => {
     const child = spawn('npx', ['--no-install', 'wrangler', ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
