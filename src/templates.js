@@ -596,11 +596,26 @@ export function geoArchivePage({ geoMeta, dates }) {
  *        search_volume_raw, started_at, news_json
  * @param {string} [o.lang] - 渲染语言
  */
-export function keywordPage({ geoMeta, keyword, intro, history, lang }) {
+export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount = 0, topGeos = [] }) {
   const assetsPrefix = '../../../';
   const flag = flagHtml(geoMeta.code, geoMeta.name);
   const renderLang = lang || geoMeta.lang;
   const latest = history[0];
+
+  // 该 keyword 最近出现的国家（跨 geo）：flag 行 + 计数。
+  const enVariant = isEnVariantPage(geoMeta, renderLang);
+  const langSuffix = enVariant ? '?lang=en' : '';
+  const countriesRow = geoCount > 0
+    ? `<div class="keyword-geos">
+         <span class="muted">Trending in <strong>${geoCount}</strong> ${geoCount === 1 ? 'country' : 'countries'}:</span>
+         ${topGeos.map((code) => {
+           const g = GEO_BY_CODE[code];
+           if (!g) return '';
+           return `<a href="../../${g.code}/index.html${langSuffix}" class="flag-link" title="${escAttr(g.name)}">${flagHtml(g.code, g.name)}</a>`;
+         }).join(' ')}
+         ${geoCount > topGeos.length ? '<span class="muted">…</span>' : ''}
+       </div>`
+    : '';
 
   const peak = history.reduce(
     (m, r) => (r.search_volume_num > m ? r.search_volume_num : m),
@@ -617,8 +632,6 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang }) {
   const encodedKeyword = encodeURIComponent(keyword);
   const keywordSlug = keywordToSlug(keyword);
   const basePath = `/geo/${geoMeta.code}/keyword/${encodeURIComponent(keywordSlug)}.html`;
-  const enVariant = isEnVariantPage(geoMeta, renderLang);
-  const langSuffix = enVariant ? '?lang=en' : '';
   const canonicalPath = basePath + langSuffix;
   const alternates = buildAlternates(geoMeta, basePath);
   const langSwitch = buildLangSwitch(geoMeta, renderLang, basePath);
@@ -698,12 +711,14 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang }) {
   ${shareButtonsHtml}
 
   ${intro ? `<div class="detail-intro"><p>${escape(intro)}</p></div>` : ''}
+  ${countriesRow}
 
   <div class="stats">
     <div class="stat"><div class="label">Peak volume</div><div class="value">${escape(formatInt(peak))}</div></div>
     <div class="stat"><div class="label">First seen</div><div class="value">${escape(firstDate ?? 'n/a')}</div></div>
     <div class="stat"><div class="label">Last seen</div><div class="value">${escape(lastDate ?? 'n/a')}</div></div>
     <div class="stat"><div class="label">Days trending</div><div class="value">${history.length} / ${spanDays}</div></div>
+    <div class="stat"><div class="label">Countries</div><div class="value">${geoCount || '—'}</div></div>
   </div>
 
   <h2 class="section-title">Trending timeline</h2>

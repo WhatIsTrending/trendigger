@@ -406,6 +406,25 @@ h1.page-title .flag { font-size: 28px; }
   font-size: 16px;
   line-height: 1.6;
 }
+.keyword-geos {
+  margin: 0 0 18px;
+  font-size: 14px;
+  line-height: 1.8;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+.keyword-geos .muted { color: var(--text-muted); margin-right: 4px; }
+.keyword-geos .flag-link {
+  display: inline-flex;
+  text-decoration: none;
+  font-size: 22px;
+  line-height: 1;
+  filter: grayscale(0.15);
+  transition: filter 0.15s, transform 0.15s;
+}
+.keyword-geos .flag-link:hover { filter: grayscale(0); transform: scale(1.15); }
 .stats {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
