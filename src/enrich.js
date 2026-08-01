@@ -1,4 +1,4 @@
-// Enrich：为缺少简介的关键词生成 Gemini 简介（当地语言 + 英文双版本）。
+// Enrich：为缺少简介的关键词生成简介（当地语言），并把非英语简介翻译成英文。
 // 用法:
 //   node src/enrich.js                       # 今天，所有 geos
 //   node src/enrich.js US JP                 # 只指定 geo
@@ -6,19 +6,21 @@
 //   node src/enrich.js --keyword "anthony edwards" --geo US   # 强制单条重生成
 //   node src/enrich.js --limit 20            # 本次最多跑多少条（省配额）
 //   node src/enrich.js --top 50              # 每个 geo 只处理 volume 前 50（默认 50，0=不限）
-//   node src/enrich.js --only-lang en        # 只补英文版本（默认：缺啥补啥）
+//   node src/enrich.js --only-lang en        # 只补英文版本（翻译现有当地 intro）
+//   node src/enrich.js --only-lang local     # 只补当地语言版本
 //
 // 逻辑：
 //   1) 从 trend_snapshots 取当天每个 (geo, keyword) 的峰值快照（含 news_json）
 //   2) LEFT JOIN keyword_intro：判断还缺哪种语言
 //        - 当地语言（geoMeta.lang）缺失 → 生成当地语言
-//        - 当地语言非 en 且英文缺失     → 生成英文
+//        - 当地语言非 en 且英文缺失     → 把当地 intro 翻译成英文（Azure Translator）
 //        - 当地语言 = en 时只生成一份，存 intro，intro_en 留空（渲染时回退）
-//   3) COALESCE upsert：只更新本次生成过的字段，不覆盖已有的另一种语言
+//   3) COALESCE upsert：只更新本次生成/翻译过的字段，不覆盖已有的另一种语言
 //   4) 失败不阻断整轮，记录到日志
 
 import { queryAll, executeBatch } from './db.js';
 import { generateIntro } from './providers.js';
+import { translate } from './translate.js';
 import { GEOS, GEO_BY_CODE } from './geos.js';
 
 const args = process.argv.slice(2);
@@ -86,7 +88,8 @@ if (flags.keyword) {
   const c = makeCandidate({ keyword: flags.keyword, geo, news }, geoMeta, null, null, null, true);
   const r = await runOne(c);
   await flushBatch([r]);
-  console.log(`Done. [${geo}] "${flags.keyword}" langs=${c.langs.join(',')}`);
+  const tags = [c.doLocal && c.localLang, c.doEn && 'en'].filter(Boolean).join(',');
+  console.log(`Done. [${geo}] "${flags.keyword}" langs=${tags}`);
   process.exit(0);
 }
 
@@ -105,7 +108,7 @@ console.log(
 );
 
 let ok = 0, fail = 0;
-/** @type {{keyword:string,geo:string,lang:string,intro:string|null,intro_en:string|null,model:string}[]} */
+/** @type {{keyword:string,geo:string,lang:string,intro:string|null,intro_en:string|null,model:string|null}[]} */
 const results = [];
 const FLUSH_EVERY = 50;
 
@@ -120,7 +123,8 @@ await runPool(list, flags.concurrency, async (c) => {
     }
   } catch (err) {
     fail++;
-    console.error(`  ✗ [${c.geo}] "${c.keyword}" (${c.langs.join(',')}): ${err.message}`);
+    const tags = [c.doLocal && c.localLang, c.doEn && 'en'].filter(Boolean).join(',');
+    console.error(`  ✗ [${c.geo}] "${c.keyword}" (${tags}): ${err.message}`);
   }
 });
 
@@ -173,17 +177,17 @@ async function collectCandidates(geos, date, force, onlyLang) {
     );
     // --only-lang 过滤：只补指定语言
     if (onlyLang === 'en') {
-      c.langs = c.langs.filter((l) => l === 'en');
+      c.doLocal = false;
     } else if (onlyLang === 'local') {
-      c.langs = c.langs.filter((l) => l !== 'en');
+      c.doEn = false;
     }
-    if (c.langs.length > 0) out.push(c);
+    if (c.doLocal || c.doEn) out.push(c);
   }
   return out;
 }
 
 /**
- * 构造单个候选对象，计算还需生成哪些语言。
+ * 构造单个候选对象，计算还需生成/翻译哪些语言。
  * @param {{keyword:string,geo:string,news:any[]}} base
  * @param {{lang:string}|undefined} geoMeta
  * @param {string|null} intro      - 已缓存的当地语言 intro
@@ -193,19 +197,20 @@ async function collectCandidates(geos, date, force, onlyLang) {
  */
 function makeCandidate(base, geoMeta, intro, introEn, introLang, force) {
   const localLang = geoMeta?.lang ?? 'en';
-  const langs = [];
+  let doLocal = false;
+  let doEn = false;
   if (force) {
-    langs.push(localLang);
-    if (localLang !== 'en') langs.push('en');
+    doLocal = true;
+    doEn = localLang !== 'en';
   } else if (introLang == null || intro == null) {
-    // 没有缓存行或当地语言缺失：补齐当地语言（+ 英文，如果非 en）
-    langs.push(localLang);
-    if (localLang !== 'en') langs.push('en');
+    // 没有缓存行或当地语言缺失：补齐当地语言（+ 英文翻译，如果非 en）
+    doLocal = true;
+    doEn = localLang !== 'en';
   } else if (localLang !== 'en' && introEn == null) {
-    // 当地语言已有，只缺英文
-    langs.push('en');
+    // 当地语言已有，只缺英文 → 翻译
+    doEn = true;
   }
-  return { ...base, localLang, langs };
+  return { ...base, localLang, doLocal, doEn, existingLocalIntro: intro };
 }
 
 function applyTopPerGeo(candidates, topN) {
@@ -220,20 +225,39 @@ function applyTopPerGeo(candidates, topN) {
 }
 
 async function runOne(c) {
-  const { localLang } = c;
-  let localIntro = null;
+  const { localLang, doLocal, doEn, existingLocalIntro } = c;
+  let localIntro = doLocal ? null : existingLocalIntro;
   let enIntro = null;
   let model = null;
-  for (const lang of c.langs) {
+
+  if (doLocal) {
     const { intro, model: m } = await generateIntro({
-      keyword: c.keyword, geo: c.geo, lang, news: c.news,
+      keyword: c.keyword, geo: c.geo, lang: localLang, news: c.news,
     });
     model = m;
-    if (lang === 'en') enIntro = intro;
-    else localIntro = intro;
+    localIntro = intro;
     const preview = intro.length > 80 ? intro.slice(0, 80) + '…' : intro;
-    console.log(`  ✓ [${c.geo}] "${c.keyword}" (${lang}) — ${preview}`);
+    console.log(`  ✓ [${c.geo}] "${c.keyword}" (${localLang}) — ${preview}`);
   }
+
+  if (doEn) {
+    // 非英语 geo：把当地语言 intro 翻译成英文，而不是再次调用 AI 生成。
+    // Azure 自动检测源语种，兼容混合语种 summary（如马来西亚英/马/中混排）。
+    const source = localIntro || existingLocalIntro;
+    if (!source) {
+      console.warn(`  ⚠ [${c.geo}] "${c.keyword}" skip en: no local intro to translate`);
+    } else {
+      try {
+        enIntro = await translate(source, { to: 'en' });
+        const preview = enIntro.length > 80 ? enIntro.slice(0, 80) + '…' : enIntro;
+        console.log(`  ✓ [${c.geo}] "${c.keyword}" (en·translate) — ${preview}`);
+        if (!model) model = 'azure-translate';
+      } catch (err) {
+        console.warn(`  ⚠ [${c.geo}] "${c.keyword}" translate failed: ${err.message}`);
+      }
+    }
+  }
+
   // 当地语言 = en 时：生成的英文就是当地语言版本，存进 intro
   let introOut = localIntro;
   let introEnOut = enIntro;
@@ -247,9 +271,10 @@ async function runOne(c) {
 async function flushBatch(results) {
   if (!results.length) return;
   const nowSec = Math.floor(Date.now() / 1000);
-  // COALESCE upsert：只覆盖本次生成过的字段（非 NULL），保留另一种语言。
-  // intro/intro_en 均允许 NULL（见 schema.sql），故仅补英文时 intro 传 NULL 安全——
-  // 既有行经 ON CONFLICT DO UPDATE 用 COALESCE 保留原 intro；新行则写入 NULL。
+  // COALESCE upsert：只覆盖本次生成/翻译过的字段（非 NULL），保留另一种语言。
+  // intro/intro_en 均允许 NULL，故仅补英文时 intro 传 NULL 安全——既有行经
+  // ON CONFLICT DO UPDATE 用 COALESCE 保留原 intro；新行则写入 NULL。
+  // model 同样用 COALESCE：仅翻译失败（model=NULL）时不覆盖原 AI model。
   const stmts = results.map((r) => ({
     sql: `INSERT INTO keyword_intro (keyword, geo, lang, intro, intro_en, model, generated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -257,7 +282,7 @@ async function flushBatch(results) {
             lang = COALESCE(excluded.lang, keyword_intro.lang),
             intro = COALESCE(excluded.intro, keyword_intro.intro),
             intro_en = COALESCE(excluded.intro_en, keyword_intro.intro_en),
-            model = excluded.model,
+            model = COALESCE(excluded.model, keyword_intro.model),
             generated_at = excluded.generated_at`,
     params: [r.keyword, r.geo, r.lang, r.intro, r.intro_en, r.model, nowSec],
   }));

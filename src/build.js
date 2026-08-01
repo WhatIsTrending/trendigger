@@ -138,11 +138,9 @@ const wwHome = await buildWwHomepage(byGeoDate);
 await maybeWrite(
   join(OUT, 'index.html'),
   homePage({
-    date: wwHome.latestDate,
     items: wwHome.latestItems,
     geoCode: 'WW',
     availableDates: wwHome.wwDates,
-    latestTime: wwHome.latestTime,
     latestTimeIso: wwHome.latestTimeIso,
     sections: wwHome.agoSections,
   }),
@@ -262,8 +260,6 @@ async function buildWwHomepage(byGeoDate) {
     ? latest.items.slice(0, 50).map((it, i) => ({ ...it, rank: i + 1 }))
     : [];
   const latestTimeIso = latest?.latestObs ?? new Date().toISOString();
-  const latestTime = latestTimeIso.slice(0, 16).replace('T', ' ');
-  const latestDate = latest ? latest.bucketKey.slice(0, 10) : latestTime.slice(0, 10);
 
   // 最近 6 个更早桶 → time-ago 区块（4h/8h/12h/16h/20h/24h ago，24h 标 Yesterday）
   const agoSections = [];
@@ -273,14 +269,15 @@ async function buildWwHomepage(byGeoDate) {
     const hours = off * 4;
     const label = hours >= 24 ? 'Yesterday' : `${hours} hours ago`;
     const items = b.items.slice(0, 10).map((it, i) => ({ ...it, rank: i + 1 }));
-    agoSections.push({ label, items });
+    // latestObs = 该桶内最新 observed_at（ISO），供前端按访问时间计算 "X hours ago"
+    agoSections.push({ label, items, obsIso: b.latestObs });
   }
 
   const wwDates = [...new Set(
     [...byGeoDate.values()].flatMap((m) => [...m.keys()])
   )].sort((a, b) => (a < b ? 1 : -1));
 
-  return { latestItems, latestTime, latestTimeIso, latestDate, agoSections, wwDates };
+  return { latestItems, latestTimeIso, agoSections, wwDates };
 }
 
 // 单个 4h 桶内跨 geo 聚合 WW：按 normalized keyword 去重（取 volume 最高），

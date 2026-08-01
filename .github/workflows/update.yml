@@ -43,6 +43,11 @@ jobs:
       AI_PROVIDER: snippet
       # 不再使用 cloudflare fallback：snippet 抓取失败就留空，省时间省配额
       FALLBACK_PROVIDER: ''
+      # 非英语 intro 翻译成英文（Azure Translator 免费层 2M 字符/月）。
+      # 缺少 key 时 enrich 会跳过翻译、仅留当地语言 intro（不影响构建）。
+      TRANSLATE_PROVIDER: azure
+      AZURE_TRANSLATOR_KEY: ${{ secrets.AZURE_TRANSLATOR_KEY }}
+      AZURE_TRANSLATOR_REGION: ${{ secrets.AZURE_TRANSLATOR_REGION }}
 
     steps:
       - name: Setup SSH agent for private submodule

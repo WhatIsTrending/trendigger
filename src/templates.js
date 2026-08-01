@@ -271,18 +271,35 @@ ${bodyHtml}
     });
   } catch(e) {}
 })();
-// 把首页 "latest YYYY-MM-DD HH:MM UTC" 按访问者本地时区重写
+// 把 [data-obs-iso] 区块标题按访问者访问时间重写为相对时间
+// （11min ago / 1 hour ago / 5 hours ago … / Yesterday / 2026-07-31）。
+// 首个标题用最新桶 observed_at，后续标题用各自桶的 observed_at，
+// 这样相对时间会随访问时刻自然递增（1h→5h→9h…）。
 (function(){
-  var el = document.querySelector('[data-latest-utc]');
-  if(!el) return;
-  try {
-    var iso = el.getAttribute('data-latest-utc');
+  var els = document.querySelectorAll('[data-obs-iso]');
+  if(!els.length) return;
+  var now = Date.now();
+  els.forEach(function(el){
+    var iso = el.getAttribute('data-obs-iso');
     if(!iso) return;
-    var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-    var d = new Date(iso);
-    var s = d.toLocaleString(undefined, { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', timeZone: tz });
-    el.textContent = s;
-  } catch(e) {}
+    var t = new Date(iso).getTime();
+    if(isNaN(t)) return;
+    var diffMs = now - t;
+    if(diffMs < 0) diffMs = 0;
+    var mins = Math.floor(diffMs / 60000);
+    if(mins < 1){ el.textContent = 'just now'; return; }
+    if(mins < 60){ el.textContent = mins + 'min ago'; return; }
+    var hours = Math.floor(mins / 60);
+    if(hours < 24){ el.textContent = hours + (hours === 1 ? ' hour ago' : ' hours ago'); return; }
+    var days = Math.floor(hours / 24);
+    if(days === 1){ el.textContent = 'Yesterday'; return; }
+    if(days < 7){ el.textContent = days + ' days ago'; return; }
+    var d = new Date(t);
+    var y = d.getUTCFullYear();
+    var m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    var dd = String(d.getUTCDate()).padStart(2, '0');
+    el.textContent = y + '-' + m + '-' + dd;
+  });
 })();
 </script>
 </body>
@@ -710,43 +727,43 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang }) {
 
 /**
  * @param {object} o
- * @param {string} o.date
  * @param {object[]} o.items - WW latest-bucket snapshots (already ranked 1..N by volume)
  * @param {string[]} [o.availableDates] - WW historical dates for datebar (most recent first)
  * @param {string} [o.geoCode='WW'] - which geo this home view represents
- * @param {string} [o.latestTime] - 精确到分的最新更新时间，如 "2026-08-01 18:35"
- * @param {string} [o.latestTimeIso] - 同上的 ISO 形式（供前端按时区重写）
- * @param {{label:string, items:object[]}[]} [o.sections] - 更早的 time-ago 区块
+ * @param {string} [o.latestTimeIso] - 最新桶 observed_at 的 ISO 形式（供前端计算相对时间）
+ * @param {{label:string, items:object[], obsIso?:string}[]} [o.sections] - 更早的 time-ago 区块
  */
-export function homePage({ date, items, availableDates = [], geoCode = 'WW', latestTime, latestTimeIso, sections = [] }) {
+export function homePage({ items, availableDates = [], geoCode = 'WW', latestTimeIso, sections = [] }) {
   const geoMeta = GEO_BY_CODE[geoCode] || GEO_BY_CODE.WW;
   const isWW = geoCode === 'WW';
   // WW 永远是英文 summary 视图
   const renderLang = 'en';
-
-  // WW 历史日期按钮：Latest 指向首页自身，日期指向 geo/WW/{date}.html（动态聚合）
-  const dateNav = isWW
-    ? buildDateNav(availableDates, date, true, 'geo/WW/')
-    : '';
 
   // 最新桶主列表
   const cards = items
     .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
     .join('\n');
 
+  // 最新桶标题：data-obs-iso 供前端按访问时间计算相对时间（11min ago / 1 hour ago …），
+  // 无 JS 时回退显示 "Latest"。
+  const latestTitleAttr = latestTimeIso ? ` data-obs-iso="${escAttr(latestTimeIso)}"` : '';
+  const latestTitle = `<h2 class="section-title"${latestTitleAttr}>Latest</h2>`;
+
   // 更早的 time-ago 区块（4h ago / 8h ago / ... / Yesterday）
+  // 每个标题带 data-obs-iso，前端按该桶 observed_at 与访问时间之差重写为
+  // "5 hours ago" / "9 hours ago" …，自然衔接首个动态标题。
   const agoHtml = sections.map((sec) => {
     const secCards = sec.items
       .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
       .join('\n');
-    return `<h2 class="section-title">${escape(sec.label)}</h2>
+    const titleAttr = sec.obsIso ? ` data-obs-iso="${escAttr(sec.obsIso)}"` : '';
+    return `<h2 class="section-title"${titleAttr}>${escape(sec.label)}</h2>
   <div class="trend-grid">${secCards}</div>`;
   }).join('\n');
 
-  // latest 时间：优先用 JS 按访问者时区重写，回退到 UTC 字符串
-  const latestBadge = latestTime
-    ? `<strong data-latest-utc="${escAttr(latestTimeIso || '')}">${escape(latestTime)} UTC</strong>`
-    : `<strong>${escape(date)}</strong>`;
+  // 更早日期导航放在 time-ago 区块之后：日期 pills + datepicker，无 "Latest" pill
+  // （最新内容已由首个相对时间标题代表）。
+  const olderDateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
 
   const titleFlag = flagHtml(geoCode, geoMeta.name);
   const body = `
@@ -755,14 +772,15 @@ export function homePage({ date, items, availableDates = [], geoCode = 'WW', lat
     <span>${escape(geoMeta.name)} Google Trends</span>
   </h1>
   <p class="page-sub">
-    Top ${items.length} trending searches by volume · updated every 4h · latest: ${latestBadge}.
+    Top ${items.length} trending searches by volume · updated every 4h.
   </p>
   <nav class="region-bar" aria-label="Switch region">${regionBar(geoCode, '')}</nav>
-  ${dateNav}
+  ${latestTitle}
   <div class="trend-grid">
     ${cards || '<p>No worldwide data yet. Collection runs every 4 hours.</p>'}
   </div>
-  ${agoHtml}`;
+  ${agoHtml}
+  ${olderDateNav}`;
 
   return layout({
     title: isWW ? 'Worldwide Google Trends — TOP 100' : `${geoMeta.name} Google Trends`,
@@ -771,6 +789,39 @@ export function homePage({ date, items, availableDates = [], geoCode = 'WW', lat
     bodyHtml: body,
     canonicalPath: '/',
   });
+}
+
+// 首页底部「更早日期」导航：只列日期 pills + datepicker，不含 "Latest" pill。
+// WW 日期页是 Pages Functions 动态聚合页。
+function buildHomeDateNav(dates, dateHrefPrefix) {
+  if (!dates || !dates.length) return '';
+  const pillsDates = dates.slice(0, 7);
+  const sortedAsc = [...dates].sort();
+  const minDate = sortedAsc[0];
+  const maxDate = sortedAsc[sortedAsc.length - 1];
+  const dateSetJs = JSON.stringify(Object.fromEntries(dates.map((d) => [d, 1])));
+
+  const picker = `
+    <label class="datepicker" title="Jump to a specific day">
+      <input type="date" min="${escape(minDate)}" max="${escape(maxDate)}"
+             onchange="(function(inp){
+               var ok=${dateSetJs};
+               var p=${JSON.stringify(dateHrefPrefix)};
+               var v=inp.value;
+               if(!v) return;
+               if(!ok[v]){ alert('No data for '+v+'. Available: '+Object.keys(ok).sort().join(', ')); inp.value=''; return; }
+               location.href = p + v + '.html';
+             })(this)">
+    </label>`;
+
+  const pills = pillsDates.map((d) =>
+    `<a href="${escAttr(dateHrefPrefix)}${escape(d)}.html">${escape(d)}</a>`);
+
+  return `<div class="datebar">
+    <span class="datebar-label">Older dates</span>
+    ${pills.join('')}
+    ${picker}
+  </div>`;
 }
 
 // ---------------------------------------------------------------------------
