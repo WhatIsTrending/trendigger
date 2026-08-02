@@ -129,12 +129,23 @@ for (const [geo, m] of byGeoDate.entries()) {
   latestDate.set(geo, dates[0]);
 }
 
+// 近 48h 原始快照：WW 首页 + 各 geo latest 页的 4h 横排都用它，只查一次。
+const recentCutoff = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+const recentRows = await queryAll(RECENT_BUCKETS_SQL, [recentCutoff]);
+// 按 geo 分组，供各 geo latest 页构建 4h 横排桶
+const recentByGeo = new Map();
+for (const r of recentRows) {
+  if (!recentByGeo.has(r.geo)) recentByGeo.set(r.geo, []);
+  recentByGeo.get(r.geo).push(r);
+}
+console.log(`Loaded ${recentRows.length} recent (48h) snapshot rows for hours-columns.`);
+
 // 2. Home page — Worldwide, with per-bucket time-ago sections ---------------
 // WW 无法直接抓取。改为按 4h 采集桶聚合：每个桶取所有 geo 该 4h 窗口内的快照，
 // 跨 geo 按 keyword 去重（取 volume 最高），按搜索量降序。
 // 首页展示「最新桶」TOP N 作为主列表，其后叠加最近若干桶（4h ago / 8h ago /
 // ... / Yesterday）作为 time-ago 区块，再用 datebar 链接到更早的日期页。
-const wwHome = await buildWwHomepage(byGeoDate);
+const wwHome = await buildWwHomepage(byGeoDate, recentRows);
 await maybeWrite(
   join(OUT, 'index.html'),
   homePage({
@@ -175,7 +186,23 @@ for (const g of GEOS) {
     const date = dates[i];
     const trends = m.get(date);
     const isLatest = i === 0;
-    const html = geoPage({ geoMeta: g, date, isLatest, trends, availableDates: dates });
+    let html;
+    if (isLatest) {
+      // latest geo 页：4h 横排（latest + 6 time-ago），数据来自近 48h 快照；
+      // 无近 48h 数据时回退到当日峰值单列。
+      const gb = buildGeoBucketsFromRows(recentByGeo.get(g.code) || [], g.lang);
+      const hasRecent = gb.latestItems.length > 0;
+      html = geoPage({
+        geoMeta: g, date, isLatest: true,
+        trends: hasRecent ? gb.latestItems : trends,
+        availableDates: dates,
+        sections: hasRecent ? gb.agoSections : [],
+        latestTimeIso: hasRecent ? gb.latestTimeIso : undefined,
+        lang: g.lang,
+      });
+    } else {
+      html = geoPage({ geoMeta: g, date, isLatest: false, trends, availableDates: dates });
+    }
 
     if (isLatest) {
       await maybeWrite(join(OUT, 'geo', g.code, 'index.html'), html);
@@ -235,9 +262,8 @@ function sha1(input) {
 //   latestDate   — 最新桶的本地日期（YYYY-MM-DD，供 datebar 高亮）
 //   agoSections  — 最近若干更早桶，每桶 TOP M，label 为 "4 hours ago" … "Yesterday"
 //   wwDates      — 所有 geo 日期并集（供 datebar 跳转更早日期）
-async function buildWwHomepage(byGeoDate) {
-  const cutoff = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
-  const rows = await queryAll(RECENT_BUCKETS_SQL, [cutoff]);
+async function buildWwHomepage(byGeoDate, recentRows) {
+  const rows = recentRows;
 
   // 按 4h 桶分组（对齐 cron 0/4/8/12/16/20 UTC）
   const byBucket = new Map();
@@ -297,6 +323,57 @@ function aggregateWwBucket(rows, topN) {
     .sort((a, b) => (b.search_volume_num ?? 0) - (a.search_volume_num ?? 0))
     .slice(0, topN)
     .map((it) => ({ ...it, intro: it.intro_en || it.intro || null }));
+}
+
+// 单个 geo 的 4h 横排：latest + 6 time-ago 桶。
+// 与 WW 不同：不跨 geo 聚合，每桶就是该 geo 该 4h 窗口的快照（按 keyword 去重取最高 volume）。
+// intro 按渲染语言挑选（en → intro_en 回退 intro；否则 intro）。
+function buildGeoBucketsFromRows(rows, lang) {
+  const byBucket = new Map();
+  for (const r of rows) {
+    const key = bucketKey(r.observed_at);
+    if (!byBucket.has(key)) byBucket.set(key, []);
+    byBucket.get(key).push(r);
+  }
+  const bucketKeys = [...byBucket.keys()].sort((a, b) => (a < b ? 1 : -1));
+  const perBucket = bucketKeys.map((k) => {
+    const raw = byBucket.get(k);
+    const latestObs = raw.map((r) => r.observed_at).sort().pop();
+    const items = dedupGeoBucket(raw).map((it) => ({ ...it, intro: pickIntro(it, lang) }));
+    return { latestObs, items };
+  });
+  const latest = perBucket[0];
+  const latestItems = latest ? latest.items.map((it, i) => ({ ...it, rank: i + 1 })) : [];
+  const latestTimeIso = latest?.latestObs ?? new Date().toISOString();
+  const agoSections = [];
+  for (let off = 1; off <= 6; off += 1) {
+    const b = perBucket[off];
+    if (!b) break;
+    const hours = off * 4;
+    const label = hours >= 24 ? 'Yesterday' : `${hours} hours ago`;
+    const items = b.items.map((it, i) => ({ ...it, rank: i + 1 }));
+    agoSections.push({ label, items, obsIso: b.latestObs });
+  }
+  return { latestItems, latestTimeIso, agoSections };
+}
+
+// 单个 4h 桶内按 normalized keyword 去重（取 volume 最高），按搜索量降序。
+function dedupGeoBucket(rows) {
+  const byKey = new Map();
+  for (const it of rows) {
+    const key = (it.keyword || '').toString().toLowerCase().trim();
+    if (!key) continue;
+    const prev = byKey.get(key);
+    if (!prev || (it.search_volume_num ?? 0) > (prev.search_volume_num ?? 0)) {
+      byKey.set(key, it);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => (b.search_volume_num ?? 0) - (a.search_volume_num ?? 0));
+}
+
+function pickIntro(it, lang) {
+  if (lang === 'en') return it.intro_en || it.intro || null;
+  return it.intro || null;
 }
 
 // observed_at(ISO) → 4h 对齐的桶键 "YYYY-MM-DD HH:00"（UTC）。

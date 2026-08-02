@@ -459,7 +459,7 @@ function safeJson(s, fb) { try { return JSON.parse(s); } catch { return fb; } }
  * @param {string[]} o.availableDates - for nav (most recent first)
  * @param {string} [o.lang]    - 渲染语言（'en' 或 geoMeta.lang）
  */
-export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang }) {
+export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang, sections = [], latestTimeIso }) {
   const assetsPrefix = '../../';
   const flag = flagHtml(geoMeta.code, geoMeta.name);
   const renderLang = lang || geoMeta.lang;
@@ -475,52 +475,60 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang 
 
   const dateNav = buildDateNav(availableDates, date, isLatest, '', renderLang);
   const showGeoFlag = geoMeta.code === 'WW';
-  const showCount = 50;
-  const hasMore = trends.length > showCount;
-  const visibleTrends = hasMore ? trends.slice(0, showCount) : trends;
-  const hiddenTrends = hasMore ? trends.slice(showCount) : [];
+  const useHoursView = sections && sections.length > 0;
 
-  const cards = visibleTrends
-    .map((t) => trendCard({ trend: t, geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang }))
-    .join('\n');
+  // latest geo 页用 4h 横排（latest + time-ago 桶）；历史日期页保持单列 + show-more。
+  let listHtml;
+  if (useHoursView) {
+    const buckets = [
+      { label: 'Latest', obsIso: latestTimeIso, items: trends },
+      ...sections.map((s) => ({ label: s.label, obsIso: s.obsIso, items: s.items })),
+    ];
+    listHtml = `<div class="time-columns">${renderTimeColumns(buckets, { geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang })}</div>`;
+  } else {
+    const showCount = 50;
+    const hasMore = trends.length > showCount;
+    const visibleTrends = hasMore ? trends.slice(0, showCount) : trends;
+    const hiddenTrends = hasMore ? trends.slice(showCount) : [];
+    const cards = visibleTrends
+      .map((t) => trendCard({ trend: t, geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang }))
+      .join('\n');
+    const moreCards = hasMore
+      ? hiddenTrends
+          .map((t) => trendCard({ trend: t, geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang }))
+          .join('\n')
+      : '';
+    const moreSection = hasMore
+      ? `<div class="more-trends" id="more-trends" style="display:none;">${moreCards}</div>
+         <button class="btn-show-more" onclick="(function(btn){
+           var more = document.getElementById('more-trends');
+           if (more.style.display === 'none') {
+             more.style.display = 'contents';
+             btn.textContent = 'Show less';
+           } else {
+             more.style.display = 'none';
+             btn.textContent = 'Show all ${trends.length} trends';
+             window.scrollTo({top: btn.offsetTop - 100, behavior:'smooth'});
+           }
+         })(this)">Show all ${trends.length} trends &darr;</button>`
+      : '';
+    listHtml = `<div class="trend-grid">${cards || '<p>No data for this date.</p>'}</div>${moreSection}`;
+  }
 
-  const moreCards = hasMore
-    ? hiddenTrends
-        .map((t) => trendCard({ trend: t, geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang }))
-        .join('\n')
-    : '';
-
-  const moreSection = hasMore
-    ? `<div class="more-trends" id="more-trends" style="display:none;">${moreCards}</div>
-       <button class="btn-show-more" onclick="(function(btn){
-         var more = document.getElementById('more-trends');
-         if (more.style.display === 'none') {
-           more.style.display = 'contents';
-           btn.textContent = 'Show less';
-         } else {
-           more.style.display = 'none';
-           btn.textContent = 'Show all ${trends.length} trends';
-           window.scrollTo({top: btn.offsetTop - 100, behavior:'smooth'});
-         }
-       })(this)">Show all ${trends.length} trends &darr;</button>`
-    : '';
+  const sub = useHoursView
+    ? `Top ${trends.length} trending searches per 4-hour window · updated every 4h.`
+    : `${isLatest ? 'Latest update' : 'Historical snapshot'} for <strong>${escape(date)}</strong> · ${trends.length} trending topics.`;
 
   const body = `
   <h1 class="page-title">
     <span class="flag">${flag}</span>
     <span>${escape(geoMeta.name)} Google Trends</span>
   </h1>
-  <p class="page-sub">
-    ${isLatest ? 'Latest update' : 'Historical snapshot'} for
-    <strong>${escape(date)}</strong> · ${trends.length} trending topics.
-  </p>
+  <p class="page-sub">${sub}</p>
   <nav class="region-bar" aria-label="Switch region">${regionBar(geoMeta.code, assetsPrefix)}</nav>
   ${langSwitch}
   ${dateNav}
-  <div class="trend-grid">
-    ${cards || '<p>No data for this date.</p>'}
-  </div>
-  ${moreSection}`;
+  ${listHtml}`;
 
   return layout({
     title: `${geoMeta.name} Trends – ${date}`,
@@ -790,6 +798,21 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
  * @param {string} [o.latestTimeIso] - 最新桶 observed_at 的 ISO 形式（供前端计算相对时间）
  * @param {{label:string, items:object[], obsIso?:string}[]} [o.sections] - 更早的 time-ago 区块
  */
+// 渲染横向 time-columns：latest + time-ago 桶，每桶一列。
+// homePage（WW）与 geoPage（地区 latest）共用，保证两处列结构一致。
+function renderTimeColumns(buckets, { geoCode, assetsPrefix, showGeoFlag, lang }) {
+  return buckets.map((b, i) => {
+    const cards = b.items
+      .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix, showGeoFlag, lang }))
+      .join('\n');
+    const obsAttr = b.obsIso ? ` data-obs-iso="${escAttr(b.obsIso)}"` : '';
+    return `<section class="bucket time-column" id="bucket-${i}">
+  <h2 class="section-title"${obsAttr}>${escape(b.label)}</h2>
+  <div class="trend-grid trend-grid--single">${cards || '<p>No data for this time slot.</p>'}</div>
+</section>`;
+  }).join('');
+}
+
 export function homePage({ items, availableDates = [], geoCode = 'WW', latestTimeIso, sections = [] }) {
   const geoMeta = GEO_BY_CODE[geoCode] || GEO_BY_CODE.WW;
   const isWW = geoCode === 'WW';
@@ -803,16 +826,7 @@ export function homePage({ items, availableDates = [], geoCode = 'WW', latestTim
   ];
 
   // 所有桶横向并排：每列渲染全部 TOP 100，靠 CSS content-visibility 跳过视口外卡片
-  const sectionsHtml = buckets.map((b, i) => {
-    const cards = b.items
-      .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
-      .join('\n');
-    const obsAttr = b.obsIso ? ` data-obs-iso="${escAttr(b.obsIso)}"` : '';
-    return `<section class="bucket time-column" id="bucket-${i}">
-  <h2 class="section-title"${obsAttr}>${escape(b.label)}</h2>
-  <div class="trend-grid trend-grid--single">${cards || '<p>No data for this time slot.</p>'}</div>
-</section>`;
-  }).join('');
+  const sectionsHtml = renderTimeColumns(buckets, { geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang });
 
   // 更早日期导航放在所有桶之后：日期 pills + datepicker
   const olderDateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
