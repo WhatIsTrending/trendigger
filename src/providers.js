@@ -237,36 +237,45 @@ async function cfFetchWithRetry(url, body, apiToken, timeoutMs) {
   throw lastErr ?? new Error('Unknown Cloudflare AI failure');
 }
 
+// 套话导语前缀（严格大小写匹配）：这些开头的 snippet 是新闻导语套话，
+// 信息量低，改用 news title 代替
+const FILLER_PREFIXES = ['Follow ', 'Sigue ', 'Siga ', 'Segu', 'Live:', 'Watch ', 'Ver '];
+function isFillerLead(text) {
+  return FILLER_PREFIXES.some((p) => text.startsWith(p));
+}
+
 async function snippetGenerateIntro(input, opts = {}) {
   const { keyword, news = [] } = input;
-
-  // 优先用最长的 news title 作为 intro：标题是编辑写的，比 Google RSS snippet
-  // 导语（"Follow live text commentary..."）质量高、信息量更大。
-  const titles = news
-    .map((n) => n.title)
-    .filter((t) => t && t.trim().length >= 20)
-    .sort((a, b) => b.length - a.length);
-  if (titles.length) {
-    return { intro: titles[0].trim(), model: 'snippet-title' };
-  }
-
-  // 没 title 才 fallback 到 snippet / 抓取正文
   const timeoutMs = opts.timeoutMs ?? 6000;
+
   for (const item of news.slice(0, 3)) {
     if (item.snippet && item.snippet.trim()) {
-      return { intro: item.snippet.trim(), model: 'snippet-rss' };
+      const snip = item.snippet.trim();
+      if (!isFillerLead(snip)) {
+        return { intro: snip, model: 'snippet-rss' };
+      }
+      // snippet 是套话导语，跳过尝试下一条
     }
 
     if (item.url) {
       try {
         const snippet = await fetchArticleSnippet(item.url, { timeoutMs });
-        if (snippet && snippet.trim()) {
+        if (snippet && snippet.trim() && !isFillerLead(snippet.trim())) {
           return { intro: snippet.trim(), model: 'snippet-fetched' };
         }
       } catch {
         continue;
       }
     }
+  }
+
+  // 所有 snippet 都是套话或不可用 → 用最长的 news title 代替
+  const titles = news
+    .map((n) => n.title)
+    .filter((t) => t && t.trim().length >= 20)
+    .sort((a, b) => b.length - a.length);
+  if (titles.length) {
+    return { intro: titles[0].trim(), model: 'snippet-title' };
   }
 
   throw new Error(`No snippet available for "${keyword}"`);
