@@ -291,12 +291,15 @@ function makeCandidate(base, geoMeta, intro, introEn, introLang, force) {
   const localLang = geoMeta?.lang ?? 'en';
   // 非英语 geo，或 EN_GEOS_NEED_EN_INTRO 中的英语 geo（如 IN），都需要 intro_en。
   const needEn = localLang !== 'en' || EN_GEOS_NEED_EN_INTRO.has(base.geo);
+  // news 为空时跳过 AI 生成：模型在无新闻线索时容易幻觉出不相关内容
+  // （如把 geo=DE 误读成 Delaware）。已有当地 intro 时的英文翻译不受影响。
+  const hasNews = Array.isArray(base.news) && base.news.length > 0;
   let doLocal = false;
   let doEn = false;
-  if (force) {
+  if (force && hasNews) {
     doLocal = true;
     doEn = needEn;
-  } else if (introLang == null || intro == null) {
+  } else if ((introLang == null || intro == null) && hasNews) {
     // 没有缓存行或当地语言缺失：补齐当地语言（+ 英文翻译，如果 needEn）
     doLocal = true;
     doEn = needEn;
@@ -304,7 +307,7 @@ function makeCandidate(base, geoMeta, intro, introEn, introLang, force) {
     // 当地语言已有，只缺英文 → 翻译
     doEn = true;
   }
-  return { ...base, localLang, doLocal, doEn, existingLocalIntro: intro };
+  return { ...base, localLang, geoName: geoMeta?.name ?? base.geo, doLocal, doEn, existingLocalIntro: intro };
 }
 
 function applyTopPerGeo(candidates, topN) {
@@ -326,7 +329,7 @@ async function runOne(c) {
 
   if (doLocal) {
     const { intro, model: m } = await generateIntro({
-      keyword: c.keyword, geo: c.geo, lang: localLang, news: c.news,
+      keyword: c.keyword, geo: c.geo, geoName: c.geoName, lang: localLang, news: c.news,
     });
     model = m;
     localIntro = intro;
@@ -343,7 +346,10 @@ async function runOne(c) {
       console.warn(`  ⚠ [${c.geo}] "${c.keyword}" skip en: no local intro to translate`);
     } else {
       try {
-        enIntro = await translate(source, { to: 'en', tier: c.tier });
+        // 传 from=localLang 作为 auto 误判时的纠错后备（en geo 除外：
+        // IN 等 en-geo 的 intro 可能是当地外语，需 auto 检测真实源语种）
+        const from = localLang !== 'en' ? localLang : undefined;
+        enIntro = await translate(source, { to: 'en', from, tier: c.tier });
         const preview = enIntro.length > 80 ? enIntro.slice(0, 80) + '…' : enIntro;
         console.log(`  ✓ [${c.geo}] "${c.keyword}" (en·${c.tier}) — ${preview}`);
         if (!model) model = c.tier === 'azure' ? 'azure-translate' : 'google-translate';

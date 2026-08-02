@@ -134,8 +134,10 @@ export async function generateIntro(input, opts = {}) {
   return { intro, model };
 }
 
-function buildPrompt({ keyword, geo, lang, news = [] }) {
+function buildPrompt({ keyword, geo, geoName, lang, news = [] }) {
   const langLabel = LANG_LABEL[lang] ?? lang ?? 'English';
+  // 用完整国家/地区名（如 Germany）代替 ISO code（DE），避免模型把 DE 误读成 Delaware
+  const region = geoName || geo;
   const newsBlock = news.length
     ? news
         .slice(0, 8)
@@ -155,7 +157,7 @@ function buildPrompt({ keyword, geo, lang, news = [] }) {
   return `You are writing a brief background summary for a trending search term.
 
 TERM: "${keyword}"
-REGION: ${geo}
+REGION: ${region}
 WRITE IN: ${langLabel}
 
 RECENT NEWS HEADLINES about this term (use them as clues for "why is this trending right now"):

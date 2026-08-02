@@ -28,6 +28,18 @@ const GOOGLE_GTX = 'https://translate.googleapis.com/translate_a/single';
 
 const PROVIDER = (process.env.TRANSLATE_PROVIDER || 'azure').toLowerCase();
 
+// Circuit breaker：Azure 免费层 2M 字符/月耗尽后返回 403（code 403001）。
+// 一旦命中，本轮剩余所有 azure 调用直接跳过，回退到 Google，避免每条都重试浪费时间。
+let azureQuotaExhausted = false;
+
+// 识别 Azure 免费配额耗尽错误：HTTP 403 + body 含 quota / 403001。
+// （403 也可能是 region 错误，但那种 body 不含 quota 关键词，不会误触发 breaker。）
+function looksLikeAzureQuotaError(status, body) {
+  if (status !== 403) return false;
+  const msg = String(body || '').toLowerCase();
+  return msg.includes('quota') || msg.includes('403001');
+}
+
 /**
  * 翻译文本。from 省略时自动检测源语种（适合混合语种 summary）。
  * @param {string} text
@@ -36,8 +48,9 @@ const PROVIDER = (process.env.TRANSLATE_PROVIDER || 'azure').toLowerCase();
  */
 export async function translate(text, opts = {}) {
   const to = opts.to || 'en';
-  const from = opts.from; // 省略 → 自动检测
+  const from = opts.from; // 已知源语种时传入，用作 auto 误判时的纠错后备
   const tier = (opts.tier || (PROVIDER === 'none' ? 'none' : 'azure')).toLowerCase();
+  const timeoutMs = opts.timeoutMs;
 
   if (!text || !text.trim()) return '';
   if (from && from === to) return text; // 同语种免调
@@ -45,8 +58,35 @@ export async function translate(text, opts = {}) {
   if (tier === 'none' || PROVIDER === 'none') {
     throw new Error('translation disabled (tier=none)');
   }
-  if (tier === 'google') return googleTranslate(text, { to, timeoutMs: opts.timeoutMs });
-  return azureTranslate(text, { to, from, timeoutMs: opts.timeoutMs });
+
+  // 单次翻译：按 tier 选 provider；tier='azure' 时若失败（含配额耗尽）回退 google。
+  async function once(useFrom) {
+    const f = useFrom ? from : undefined;
+    if (tier === 'azure' && !azureQuotaExhausted) {
+      try {
+        return await azureTranslate(text, { to, from: f, timeoutMs });
+      } catch (err) {
+        // 配额耗尽时 breaker 已打开，不重复告警；其余 azure 错误单次回退 google
+        if (!azureQuotaExhausted) {
+          console.warn(`  ⚠ Azure translate failed, fallback to google: ${err.message}`);
+        }
+      }
+    }
+    return googleTranslate(text, { to, from: f, timeoutMs });
+  }
+
+  // 第一次：auto 检测源语种（兼容混合语种 summary）。
+  const first = await once(false);
+
+  // 译文与原文相同：可能是原文已是目标语言，也可能是 auto 误判
+  // （如 Google gtx 把德语误判成英语原样返回未翻译）。
+  // 若提供了 from 且≠to，当场重试1次用显式源语种强制翻译；
+  // 仍相同则认为原文确实已是目标语言，接受。
+  if (from && from !== to && sameText(first, text)) {
+    const retry = await once(true);
+    if (!sameText(retry, text)) return retry;
+  }
+  return first;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,12 +106,15 @@ function loadAzureRegion() {
 }
 
 async function azureTranslate(text, { to, from, timeoutMs }) {
+  if (azureQuotaExhausted) {
+    throw new Error('Azure Translator quota exhausted (circuit breaker open)');
+  }
   const key = loadAzureKey();
   const region = loadAzureRegion();
 
   const params = new URLSearchParams({ 'api-version': API_VERSION });
   params.set('to', to);
-  if (from) params.set('from', from);
+  if (from) params.set('from', normalizeLang(from, 'azure'));
 
   const url = `${AZURE_BASE}/translate?${params}`;
   const body = JSON.stringify([{ Text: text }]);
@@ -87,6 +130,15 @@ async function azureTranslate(text, { to, from, timeoutMs }) {
     timeoutMs,
     isRetryable: (status) => status === 429 || status >= 500,
     retryDelay: (status) => (status === 429 ? 15000 : undefined),
+    onError: (status, respText) => {
+      if (looksLikeAzureQuotaError(status, respText)) {
+        azureQuotaExhausted = true;
+        console.warn(
+          '  ⚠ Azure Translator free quota exhausted — ' +
+          'falling back to Google for the rest of this run.',
+        );
+      }
+    },
   });
 
   const parsed = JSON.parse(resText);
@@ -102,19 +154,20 @@ async function azureTranslate(text, { to, from, timeoutMs }) {
 // Google Translate（免费 gtx 端点，与 Python googletrans 同源）
 // ---------------------------------------------------------------------------
 
-async function googleTranslate(text, { to, timeoutMs = 30000 }) {
+async function googleTranslate(text, { to, from, timeoutMs = 30000 }) {
   // gtx 端点用 GET，URL 过长会被截断；超长文本拆段翻译再拼接。
   const MAX_LEN = 1800;
-  if (text.length <= MAX_LEN) return googleTranslateChunk(text, to, timeoutMs);
+  if (text.length <= MAX_LEN) return googleTranslateChunk(text, to, from, timeoutMs);
 
   const chunks = splitText(text, MAX_LEN);
   const out = [];
-  for (const chunk of chunks) out.push(await googleTranslateChunk(chunk, to, timeoutMs));
+  for (const chunk of chunks) out.push(await googleTranslateChunk(chunk, to, from, timeoutMs));
   return out.join('');
 }
 
-async function googleTranslateChunk(text, to, timeoutMs) {
-  const url = `${GOOGLE_GTX}?client=gtx&sl=auto&tl=${encodeURIComponent(to)}&dt=t&q=${encodeURIComponent(text)}`;
+async function googleTranslateChunk(text, to, from, timeoutMs) {
+  const sl = from ? normalizeLang(from, 'google') : 'auto';
+  const url = `${GOOGLE_GTX}?client=gtx&sl=${encodeURIComponent(sl)}&tl=${encodeURIComponent(to)}&dt=t&q=${encodeURIComponent(text)}`;
   const resText = await fetchWithRetry(url, { timeoutMs, isRetryable: (status) => status === 429 || status >= 500 });
   const parsed = JSON.parse(resText);
   // parsed[0] = [[translatedChunk, originalChunk, ...], ...]
@@ -157,6 +210,7 @@ async function fetchWithRetry(url, opts) {
     timeoutMs = 30000,
     isRetryable = (status) => status === 429 || status >= 500,
     retryDelay,
+    onError,
   } = opts;
   const maxAttempts = 4;
   let lastErr;
@@ -183,14 +237,19 @@ async function fetchWithRetry(url, opts) {
         await sleep(retryDelay ? retryDelay(res.status) ?? backoff(attempt) : backoff(attempt));
         continue;
       }
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+      // 非重试 HTTP 错误（如 403 配额耗尽）：通知回调后抛出，并标记 noRetry
+      // 避免 catch 块把它当可重试错误退避重试 4 次（浪费时间+延迟告警）。
+      if (onError) onError(res.status, text);
+      const fatal = new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+      fatal.noRetry = true;
+      throw fatal;
     } catch (err) {
       lastErr = err;
       if (err.name === 'AbortError') {
         lastErr = new Error(`request timed out after ${timeoutMs}ms`);
       }
-      // 401 等不可重试错误直接抛
-      if (String(err.message).startsWith('401')) throw err;
+      // 不可重试错误（401 auth、403 quota 等标记 noRetry 的）直接抛，不退避重试
+      if (err.noRetry || String(err.message).startsWith('401')) throw err;
       if (attempt < maxAttempts) await sleep(backoff(attempt) + 1000);
     } finally {
       clearTimeout(timer);
@@ -201,3 +260,20 @@ async function fetchWithRetry(url, opts) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const backoff = (attempt) => (attempt === 1 ? 1500 : 4000) + Math.floor(Math.random() * 800);
+
+// 译文与原文是否实质相同（忽略首尾空白）。
+// 用于检测 auto 检测误判导致的"原样返回未翻译"。
+function sameText(a, b) {
+  return (a || '').trim() === (b || '').trim();
+}
+
+// 把 enrich 用的 lang code（如 zh-HK、pt-BR）规范成各翻译 provider 接受的代码。
+// Google gtx 用 ISO 639-1 / 区域变体；Azure 用 BCP-47 的 Hans/Hant 形式。
+function normalizeLang(lang, provider) {
+  if (!lang) return lang;
+  const l = String(lang).toLowerCase();
+  if (l === 'zh-hk' || l === 'zh-tw') return provider === 'google' ? 'zh-TW' : 'zh-Hant';
+  if (l === 'zh-cn') return provider === 'google' ? 'zh-CN' : 'zh-Hans';
+  if (l === 'pt-br' && provider === 'google') return 'pt';
+  return lang;
+}
