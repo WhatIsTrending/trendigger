@@ -171,11 +171,19 @@ export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canoni
   const alternateTags = alternates
     .map((a) => `<link rel="alternate" hreflang="${escAttr(a.hreflang)}" href="${escAttr(SITE_BASE + a.path)}">`)
     .join('\n');
-  const selectOptions = GEOS.map((g) => {
+  // 从 canonicalPath 推断当前 geo，用于 header region picker 显示当前地区
+  const currentGeo = (() => {
+    const m = (canonicalPath || '').match(/^\/geo\/([A-Z]{2})\//);
+    return (m && GEO_BY_CODE[m[1]]) ? m[1] : 'WW';
+  })();
+  const currentGeoMeta = GEO_BY_CODE[currentGeo] || GEO_BY_CODE.WW;
+  // region picker 下拉项：用 flag-icons SVG（select/option 只能放纯文本，故改自定义下拉）
+  const regionOptions = GEOS.map((g) => {
     const href = g.code === 'WW'
       ? `${assetsPrefix}index.html`
       : `${assetsPrefix}geo/${g.code}/index.html`;
-    return `<option value="${href}">${flagEmoji(g.code)} ${escape(g.name)}</option>`;
+    const isCur = g.code === currentGeo;
+    return `<a class="region-option${isCur ? ' current' : ''}" href="${escAttr(href)}" role="option"${isCur ? ' aria-current="true"' : ''}>${flagHtml(g.code, g.name)}<span>${escape(g.name)}</span></a>`;
   }).join('');
 
   return `<!doctype html>
@@ -229,10 +237,17 @@ ${alternateTags}
     </button>
     <a href="${assetsPrefix}index.html" class="brand">Trend<span class="dot">·</span>igger</a>
     <nav>
-      <select aria-label="Browse by region" onchange="if(this.value) location.href=this.value">
-        <option value="">Browse by region…</option>
-        ${selectOptions}
-      </select>
+      <div class="region-picker" id="regionPicker">
+        <button class="region-trigger" type="button" id="regionTrigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="region-flag">${flagHtml(currentGeo, currentGeoMeta.name)}</span>
+          <span class="region-name">${escape(currentGeoMeta.name)}</span>
+          <svg class="caret" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+        </button>
+        <div class="region-menu" id="regionMenu" role="listbox" hidden>
+          <input class="region-search" type="search" placeholder="Search country…" autocomplete="off" id="regionSearch">
+          <div class="region-list">${regionOptions}</div>
+        </div>
+      </div>
     </nav>
   </div>
 </header>
@@ -299,6 +314,49 @@ ${bodyHtml}
     var m = String(d.getUTCMonth() + 1).padStart(2, '0');
     var dd = String(d.getUTCDate()).padStart(2, '0');
     el.textContent = y + '-' + m + '-' + dd;
+  });
+})();
+// region picker 自定义下拉：点击触发器 toggle，点外部/Esc 关闭，带搜索过滤
+(function(){
+  var picker = document.getElementById('regionPicker');
+  if(!picker) return;
+  var trigger = document.getElementById('regionTrigger');
+  var menu = document.getElementById('regionMenu');
+  var search = document.getElementById('regionSearch');
+  function filter(q){
+    var ql = q.toLowerCase().trim();
+    menu.querySelectorAll('.region-option').forEach(function(opt){
+      opt.style.display = (!ql || opt.textContent.toLowerCase().indexOf(ql) !== -1) ? '' : 'none';
+    });
+  }
+  function toggle(open){
+    picker.classList.toggle('open', open);
+    trigger.setAttribute('aria-expanded', open?'true':'false');
+    menu.hidden = !open;
+    if(open && search){ search.value=''; filter(''); setTimeout(function(){ search.focus(); }, 0); }
+  }
+  trigger.addEventListener('click', function(e){ e.stopPropagation(); toggle(menu.hidden); });
+  if(search){
+    search.addEventListener('input', function(){ filter(search.value); });
+    search.addEventListener('click', function(e){ e.stopPropagation(); });
+  }
+  document.addEventListener('click', function(e){ if(!picker.contains(e.target)) toggle(false); });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') toggle(false); });
+})();
+// 首页 time-ago tab 切换：点 tab 只显示对应桶的 keyword 列表
+(function(){
+  var tabs = document.querySelectorAll('.time-tab');
+  if(!tabs.length) return;
+  var panels = document.querySelectorAll('.tab-panel');
+  tabs.forEach(function(tab){
+    tab.addEventListener('click', function(){
+      var idx = tab.getAttribute('data-tab');
+      tabs.forEach(function(t){ t.classList.remove('active'); });
+      panels.forEach(function(p){ p.hidden = true; p.classList.remove('active'); });
+      tab.classList.add('active');
+      var panel = document.querySelector('.tab-panel[data-panel="'+idx+'"]');
+      if(panel){ panel.hidden = false; panel.classList.add('active'); }
+    });
   });
 })();
 </script>
@@ -754,30 +812,29 @@ export function homePage({ items, availableDates = [], geoCode = 'WW', latestTim
   // WW 永远是英文 summary 视图
   const renderLang = 'en';
 
-  // 最新桶主列表
-  const cards = items
-    .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
-    .join('\n');
+  // 所有时间桶：最新 + 更早的 time-ago 区块，用 tab 切换只显示一个（竖排单列）
+  const buckets = [
+    { label: 'Latest', obsIso: latestTimeIso, items },
+    ...sections.map((s) => ({ label: s.label, obsIso: s.obsIso, items: s.items })),
+  ];
 
-  // 最新桶标题：data-obs-iso 供前端按访问时间计算相对时间（11min ago / 1 hour ago …），
-  // 无 JS 时回退显示 "Latest"。
-  const latestTitleAttr = latestTimeIso ? ` data-obs-iso="${escAttr(latestTimeIso)}"` : '';
-  const latestTitle = `<h2 class="section-title"${latestTitleAttr}>Latest</h2>`;
+  // tab 栏：横向可滚动，每个 tab 带 data-obs-iso 供前端重写为相对时间
+  const tabsHtml = buckets.map((b, i) => {
+    const obsAttr = b.obsIso ? ` data-obs-iso="${escAttr(b.obsIso)}"` : '';
+    return `<button class="time-tab${i === 0 ? ' active' : ''}" type="button" data-tab="${i}"${obsAttr}>${escape(b.label)}</button>`;
+  }).join('');
 
-  // 更早的 time-ago 区块（4h ago / 8h ago / ... / Yesterday）
-  // 每个标题带 data-obs-iso，前端按该桶 observed_at 与访问时间之差重写为
-  // "5 hours ago" / "9 hours ago" …，自然衔接首个动态标题。
-  const agoHtml = sections.map((sec) => {
-    const secCards = sec.items
+  // tab 面板：每个桶一个 panel，默认只显示第一个；单列竖排，card 高度由内容决定
+  const panelsHtml = buckets.map((b, i) => {
+    const cards = b.items
       .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
       .join('\n');
-    const titleAttr = sec.obsIso ? ` data-obs-iso="${escAttr(sec.obsIso)}"` : '';
-    return `<h2 class="section-title"${titleAttr}>${escape(sec.label)}</h2>
-  <div class="trend-grid">${secCards}</div>`;
-  }).join('\n');
+    return `<section class="tab-panel${i === 0 ? ' active' : ''}" data-panel="${i}"${i > 0 ? ' hidden' : ''}>
+    <div class="trend-grid trend-grid--single">${cards || '<p>No data for this time slot.</p>'}</div>
+  </section>`;
+  }).join('');
 
-  // 更早日期导航放在 time-ago 区块之后：日期 pills + datepicker，无 "Latest" pill
-  // （最新内容已由首个相对时间标题代表）。
+  // 更早日期导航放在 time-tabs 之后：日期 pills + datepicker，无 "Latest" pill
   const olderDateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
 
   const titleFlag = flagHtml(geoCode, geoMeta.name);
@@ -790,11 +847,8 @@ export function homePage({ items, availableDates = [], geoCode = 'WW', latestTim
     Top ${items.length} trending searches by volume · updated every 4h.
   </p>
   <nav class="region-bar" aria-label="Switch region">${regionBar(geoCode, '')}</nav>
-  ${latestTitle}
-  <div class="trend-grid">
-    ${cards || '<p>No worldwide data yet. Collection runs every 4 hours.</p>'}
-  </div>
-  ${agoHtml}
+  <nav class="time-tabs" role="tablist">${tabsHtml}</nav>
+  ${panelsHtml}
   ${olderDateNav}`;
 
   return layout({

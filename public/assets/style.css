@@ -75,14 +75,62 @@ header.site nav {
   display: flex; gap: 14px; align-items: center;
   font-size: 14px;
 }
-header.site select {
-  font: inherit;
+/* region picker 自定义下拉（SVG 国旗 + 当前地区名，替代原 select） */
+.region-picker { position: relative; }
+.region-trigger {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: inherit; font-size: 14px;
   padding: 6px 10px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--surface-alt);
   color: var(--text);
+  cursor: pointer;
 }
+.region-trigger:hover { border-color: var(--accent); }
+.region-trigger .region-flag { display: inline-flex; }
+.region-trigger .region-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.region-trigger .caret { opacity: .6; flex-shrink: 0; transition: transform .15s; }
+.region-picker.open .caret { transform: rotate(180deg); }
+.region-menu {
+  position: absolute; top: calc(100% + 4px); right: 0;
+  min-width: 220px; max-width: 320px;
+  max-height: 60vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  z-index: 20;
+  padding: 4px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.region-search {
+  width: 100%; box-sizing: border-box;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit; font-size: 14px;
+  background: var(--surface);
+  color: var(--text);
+}
+.region-search:focus { outline: none; border-color: var(--accent); }
+.region-list {
+  overflow-y: auto;
+  flex: 1; min-height: 0;
+  display: grid; gap: 1px;
+}
+.region-menu[hidden] { display: none; }
+.region-option {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: var(--text);
+  text-decoration: none;
+}
+.region-option:hover { background: var(--surface-alt); }
+.region-option.current { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
 h1.page-title {
   font-size: 24px;
@@ -182,6 +230,32 @@ h1.page-title .flag { font-size: 28px; }
 @media (min-width: 720px) {
   .trend-grid { grid-template-columns: repeat(2, 1fr); }
 }
+/* 首页 tab 内单列竖排：card 高度由内容决定（无 news 的自然矮） */
+.trend-grid--single { grid-template-columns: 1fr; }
+
+/* 首页 time-ago tab 栏：横向可滚动（7 个桶） */
+.time-tabs {
+  display: flex; gap: 6px;
+  overflow-x: auto; scrollbar-width: thin;
+  padding: 4px 0 14px;
+  margin-bottom: 6px;
+}
+.time-tab {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font: inherit; font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.time-tab:hover { background: var(--bg); color: var(--text); border-color: var(--accent); }
+.time-tab.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+
+/* tab 面板：hidden 时完全不占空间 */
+.tab-panel[hidden] { display: none; }
 
 /* Show more button */
 .btn-show-more {

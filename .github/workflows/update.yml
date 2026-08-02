@@ -3,7 +3,7 @@ name: Update Trendigger
 on:
   # Every 4 hours (Google Trends' smallest granularity is "past 4 hours").
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '17 */4 * * *'
   # Allow manual trigger from the Actions tab.
   workflow_dispatch:
     inputs:
