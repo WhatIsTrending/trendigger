@@ -47,9 +47,14 @@ export async function fetchArticleSnippet(url, opts = {}) {
       received += value.length;
     }
     try { await reader.cancel(); } catch {}
-    const html = new TextDecoder('utf-8', { fatal: false }).decode(
-      concatChunks(chunks, received),
-    );
+    const bytes = concatChunks(chunks, received);
+
+    // Detect charset: HTTP Content-Type header first, then <meta charset> in
+    // the first 4KB of the body. Many Japanese news sites (oricon, daily.co.jp,
+    // etc.) still serve Shift-JIS; force-decoding as UTF-8 turns the bytes into
+    // U+FFFD replacement chars and the stored intro becomes irreversible mojibake.
+    const encoding = detectEncoding(ct, bytes) || 'utf-8';
+    const html = new TextDecoder(encoding, { fatal: false }).decode(bytes);
 
     return extractSnippet(html);
   } catch {
@@ -67,6 +72,79 @@ function concatChunks(chunks, total) {
     off += c.length;
   }
   return out;
+}
+
+// Map of common charset aliases to the labels accepted by TextDecoder.
+// Covers the encodings most often seen on Asian news sites (Shift-JIS,
+// EUC-JP, ISO-2022-JP, GBK, Big5, EUC-KR) plus the UTF family.
+const CHARSET_ALIASES = {
+  'shift_jis': 'shift-jis',
+  'shift-jis': 'shift-jis',
+  'sjis': 'shift-jis',
+  'x-sjis': 'shift-jis',
+  'ms_kanji': 'shift-jis',
+  'csshiftjis': 'shift-jis',
+  'windows-31j': 'shift-jis',
+  'x-ms-cp932': 'shift-jis',
+  'cp932': 'shift-jis',
+  'euc-jp': 'euc-jp',
+  'euc_jp': 'euc-jp',
+  'x-euc-jp': 'euc-jp',
+  'iso-2022-jp': 'iso-2022-jp',
+  'iso2022-jp': 'iso-2022-jp',
+  'euc-kr': 'euc-kr',
+  'euc_kr': 'euc-kr',
+  'ks_c_5601-1987': 'euc-kr',
+  'ks_c_5601': 'euc-kr',
+  'windows-949': 'euc-kr',
+  'gbk': 'gbk',
+  'gb2312': 'gbk',
+  'csgb2312': 'gbk',
+  'gb18030': 'gb18030',
+  'big5': 'big5',
+  'big5-hkscs': 'big5',
+  'csbig5': 'big5',
+  'utf-8': 'utf-8',
+  'utf8': 'utf-8',
+  'us-ascii': 'utf-8',
+  'ascii': 'utf-8',
+  'iso-8859-1': 'utf-8', // safe fallback: many sites declare latin1 but serve UTF-8
+};
+
+function normalizeCharset(raw) {
+  if (!raw) return null;
+  const key = raw.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return CHARSET_ALIASES[key] || null;
+}
+
+/**
+ * Detect the response encoding. Priority:
+ *   1) charset parameter in the Content-Type header
+ *   2) <meta charset="..."> / <meta http-equiv="Content-Type" content="...; charset=...">
+ *      in the first 4KB of the body (decoded as ASCII to find the tag)
+ * Returns a TextDecoder-compatible label (e.g. 'shift-jis', 'utf-8') or null
+ * if nothing was found.
+ */
+function detectEncoding(contentType, bytes) {
+  // 1) HTTP header
+  const headerMatch = /charset\s*=\s*["']?([^\s;"']+)/i.exec(contentType || '');
+  if (headerMatch) {
+    const enc = normalizeCharset(headerMatch[1]);
+    if (enc) return enc;
+  }
+
+  // 2) <meta charset> in the first 4KB. Meta tags live in <head>, which is
+  // always ASCII regardless of the body encoding, so decoding as ASCII is safe.
+  const headLen = Math.min(bytes.length, 4096);
+  let head = '';
+  for (let i = 0; i < headLen; i++) head += String.fromCharCode(bytes[i]);
+  // <meta charset="shift_jis">  or  <meta http-equiv="Content-Type" content="...; charset=shift_jis">
+  const metaCharset = /<meta[^>]*charset\s*=\s*["']?([^\s;"'>]+)/i.exec(head);
+  if (metaCharset) {
+    const enc = normalizeCharset(metaCharset[1]);
+    if (enc) return enc;
+  }
+  return null;
 }
 
 /** Exported for testing. */
