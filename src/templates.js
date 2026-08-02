@@ -931,6 +931,13 @@ export function aboutPage() {
       becomes available. Summaries may not always be accurate — always
       verify important information from primary sources.
     </p>
+    <h2>Disclaimer</h2>
+    <p>
+      Trend&middot;igger is an independent project and is not affiliated with,
+      endorsed by, or sponsored by Google LLC. All trend data is sourced from
+      Google Trends Trending Now. Google and Google Trends are trademarks of
+      Google LLC.
+    </p>
   </div>`;
 
   return layout({
