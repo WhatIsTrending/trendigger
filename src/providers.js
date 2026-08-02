@@ -239,8 +239,19 @@ async function cfFetchWithRetry(url, body, apiToken, timeoutMs) {
 
 async function snippetGenerateIntro(input, opts = {}) {
   const { keyword, news = [] } = input;
-  const timeoutMs = opts.timeoutMs ?? 6000;
 
+  // 优先用最长的 news title 作为 intro：标题是编辑写的，比 Google RSS snippet
+  // 导语（"Follow live text commentary..."）质量高、信息量更大。
+  const titles = news
+    .map((n) => n.title)
+    .filter((t) => t && t.trim().length >= 20)
+    .sort((a, b) => b.length - a.length);
+  if (titles.length) {
+    return { intro: titles[0].trim(), model: 'snippet-title' };
+  }
+
+  // 没 title 才 fallback 到 snippet / 抓取正文
+  const timeoutMs = opts.timeoutMs ?? 6000;
   for (const item of news.slice(0, 3)) {
     if (item.snippet && item.snippet.trim()) {
       return { intro: item.snippet.trim(), model: 'snippet-rss' };
