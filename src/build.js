@@ -257,7 +257,7 @@ async function buildWwHomepage(byGeoDate) {
 
   const latest = perBucket[0];
   const latestItems = latest
-    ? latest.items.slice(0, 50).map((it, i) => ({ ...it, rank: i + 1 }))
+    ? latest.items.slice(0, 100).map((it, i) => ({ ...it, rank: i + 1 }))
     : [];
   const latestTimeIso = latest?.latestObs ?? new Date().toISOString();
 
@@ -268,7 +268,7 @@ async function buildWwHomepage(byGeoDate) {
     if (!b) break;
     const hours = off * 4;
     const label = hours >= 24 ? 'Yesterday' : `${hours} hours ago`;
-    const items = b.items.slice(0, 10).map((it, i) => ({ ...it, rank: i + 1 }));
+    const items = b.items.slice(0, 100).map((it, i) => ({ ...it, rank: i + 1 }));
     // latestObs = 该桶内最新 observed_at（ISO），供前端按访问时间计算 "X hours ago"
     agoSections.push({ label, items, obsIso: b.latestObs });
   }

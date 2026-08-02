@@ -343,17 +343,6 @@ ${bodyHtml}
   document.addEventListener('click', function(e){ if(!picker.contains(e.target)) toggle(false); });
   document.addEventListener('keydown', function(e){ if(e.key==='Escape') toggle(false); });
 })();
-// 首页 time-tabs 锚点导航：点击高亮当前 tab（平滑滚动由 CSS scroll-behavior 处理）
-(function(){
-  var tabs = document.querySelectorAll('.time-tab');
-  if(!tabs.length) return;
-  tabs.forEach(function(tab){
-    tab.addEventListener('click', function(){
-      tabs.forEach(function(t){ t.classList.remove('active'); });
-      tab.classList.add('active');
-    });
-  });
-})();
 </script>
 </body>
 </html>
@@ -807,25 +796,19 @@ export function homePage({ items, availableDates = [], geoCode = 'WW', latestTim
   // WW 永远是英文 summary 视图
   const renderLang = 'en';
 
-  // 所有时间桶：最新 + 更早的 time-ago 区块，全部竖排堆叠在同一页面（不切换隐藏）
+  // 所有时间桶：最新 + 更早的 time-ago 区块，横向并排展示
   const buckets = [
     { label: 'Latest', obsIso: latestTimeIso, items },
     ...sections.map((s) => ({ label: s.label, obsIso: s.obsIso, items: s.items })),
   ];
 
-  // time-tabs 作为锚点导航：横向可滚动，点击平滑滚动到对应桶
-  const tabsHtml = buckets.map((b, i) => {
-    const obsAttr = b.obsIso ? ` data-obs-iso="${escAttr(b.obsIso)}"` : '';
-    return `<a class="time-tab${i === 0 ? ' active' : ''}" href="#bucket-${i}"${obsAttr}>${escape(b.label)}</a>`;
-  }).join('');
-
-  // 所有桶竖排堆叠：每个桶一个 section + 标题（动态相对时间）+ 单列 keyword 列表
+  // 所有桶横向并排：每列渲染全部 TOP 100，靠 CSS content-visibility 跳过视口外卡片
   const sectionsHtml = buckets.map((b, i) => {
     const cards = b.items
       .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
       .join('\n');
     const obsAttr = b.obsIso ? ` data-obs-iso="${escAttr(b.obsIso)}"` : '';
-    return `<section class="bucket" id="bucket-${i}">
+    return `<section class="bucket time-column" id="bucket-${i}">
   <h2 class="section-title"${obsAttr}>${escape(b.label)}</h2>
   <div class="trend-grid trend-grid--single">${cards || '<p>No data for this time slot.</p>'}</div>
 </section>`;
@@ -841,11 +824,10 @@ export function homePage({ items, availableDates = [], geoCode = 'WW', latestTim
     <span>${escape(geoMeta.name)} Google Trends</span>
   </h1>
   <p class="page-sub">
-    Top ${items.length} trending searches by volume · updated every 4h.
+    Top ${items.length} trending searches per 4-hour window · updated every 4h.
   </p>
   <nav class="region-bar" aria-label="Switch region">${regionBar(geoCode, '')}</nav>
-  <nav class="time-tabs" role="navigation">${tabsHtml}</nav>
-  ${sectionsHtml}
+  <div class="time-columns">${sectionsHtml}</div>
   ${olderDateNav}`;
 
   return layout({

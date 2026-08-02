@@ -233,33 +233,32 @@ h1.page-title .flag { font-size: 28px; }
 /* 首页 tab 内单列竖排：card 高度由内容决定（无 news 的自然矮） */
 .trend-grid--single { grid-template-columns: 1fr; }
 
-/* 首页 time-ago tab 栏：横向可滚动（7 个桶） */
-.time-tabs {
-  display: flex; gap: 6px;
-  overflow-x: auto; scrollbar-width: thin;
-  padding: 4px 0 14px;
-  margin-bottom: 6px;
-}
-.time-tab {
-  flex: 0 0 auto;
-  white-space: nowrap;
-  font: inherit; font-size: 13px;
-  padding: 6px 14px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface-alt);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.time-tab:hover { background: var(--bg); color: var(--text); border-color: var(--accent); }
-.time-tab.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
-
 /* tab 面板：hidden 时完全不占空间 */
 .tab-panel[hidden] { display: none; }
 
-/* 首页桶堆叠：锚点跳转时预留 sticky header 空间，平滑滚动 */
+/* 首页时间桶横向并排：每个 4h 桶一列，并排可横向滚动对比 */
 html { scroll-behavior: smooth; }
 section.bucket { scroll-margin-top: 80px; }
+.time-columns {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 1rem;
+}
+.time-columns .bucket {
+  flex: 0 0 300px;
+  min-width: 300px;
+}
+/* 视口外卡片（含横向滚走的列）跳过 layout/paint，大幅降低首屏渲染成本 */
+.time-columns .card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}
+@media (max-width: 560px) {
+  .time-columns .bucket { flex-basis: 86vw; min-width: 86vw; }
+}
 
 /* Show more button */
 .btn-show-more {
