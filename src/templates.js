@@ -1,12 +1,12 @@
 // HTML templates — hand-written tagged-literal style.
-// 所有用户可控字符串都必须经过 escape().
+// All user-controlled strings must go through escape().
 import { GEOS, GEO_BY_CODE } from './geos.js';
 import { keywordHref, keywordToSlug } from './slug.js';
 
 // Site base URL for canonical / hreflang / share links
 const SITE_BASE = 'https://trendigger.com';
 
-// 当地语言的本地化名称（用于语言切换按钮的文案）
+// Native names of each locale (used for the language-switch button label)
 const LANG_NATIVE = {
   en: 'English', ja: '日本語', ko: '한국어', de: 'Deutsch', fr: 'Français',
   es: 'Español', ru: 'Русский', 'pt-BR': 'Português', id: 'Bahasa Indonesia',
@@ -37,10 +37,10 @@ export function escape(s) {
 
 function escAttr(s) { return escape(s); }
 
-// RTL 语言
+// RTL languages
 const RTL_LANGS = new Set(['ar', 'fa', 'he', 'ur']);
 
-// 简单 emoji flag: 从 ISO-2 国家码生成区域指示符组合
+// Simple emoji flag: build regional indicator pair from ISO-2 country code
 function flagEmoji(code) {
   if (code === 'WW') return '🌐';
   if (!code || code.length !== 2) return '🏳️';
@@ -51,9 +51,9 @@ function flagEmoji(code) {
   );
 }
 
-// HTML 上下文用的国旗：用 flag-icons 的 SVG（跨平台一致，Windows 也能正常显示）。
-// WW 没有 ISO 国旗，回退为 🌐 emoji；未知 code 回退为 emoji 旗。
-// 注意：<select><option> 只能放纯文本，那里仍用 flagEmoji()。
+// HTML-context flag: use flag-icons SVG (consistent cross-platform, including Windows).
+// WW has no ISO flag, falls back to 🌐 emoji; unknown codes fall back to emoji flag.
+// Note: <select><option> only accepts plain text, so flagEmoji() is still used there.
 function flagHtml(code, title) {
   if (code === 'WW') return '<span class="fi-emoji">🌐</span>';
   if (!code || code.length !== 2) return '<span class="fi-emoji">🏳️</span>';
@@ -81,13 +81,13 @@ function keywordHashtag(keyword) {
 }
 
 /**
- * 生成社交媒体分享文案（主要用于 X/Twitter intent）。
+ * Build social share text (mainly for X/Twitter intents).
  * @param {object} o
  * @param {string} o.keyword
  * @param {string|null} [o.intro]
- * @param {number} [o.peakVolume]   - 详情页峰值搜索量
- * @param {number} [o.daysTrending] - 详情页连续上榜天数
- * @param {string} [o.currentVolume] - 卡片当前搜索量标签
+ * @param {number} [o.peakVolume]   - detail-page peak search volume
+ * @param {number} [o.daysTrending] - detail-page consecutive trending days
+ * @param {string} [o.currentVolume] - card current-volume label
  * @returns {string}
  */
 function buildShareText({ keyword, intro, peakVolume, daysTrending, currentVolume }) {
@@ -109,7 +109,7 @@ function buildShareText({ keyword, intro, peakVolume, daysTrending, currentVolum
   return lines.join('\n\n');
 }
 
-/** 转义字符串使其可安全嵌入 JS 单引号字符串字面量（用于 onclick）。 */
+/** Escape a string for safe embedding inside a JS single-quoted string literal (for onclick). */
 function escapeJsString(s) {
   return String(s)
     .replace(/\\/g, '\\\\')
@@ -119,16 +119,17 @@ function escapeJsString(s) {
 }
 
 /**
- * 是否为「英文变体」页：仅当该 geo 当地语言非 en、且本次渲染 lang='en' 时成立。
- * en 系 geo（US/IN/AU/...）和 WW 本身就是英文，不需要 ?lang=en 查询参数。
+ * Whether this is an "English variant" page: true only when the geo's local
+ * language is not en and the current render lang is 'en'.
+ * English geos (US/IN/AU/...) and WW are already English, so no ?lang=en query param is needed.
  */
 function isEnVariantPage(geoMeta, lang) {
   return !!geoMeta && geoMeta.lang !== 'en' && lang === 'en';
 }
 
 /**
- * 为某 basePath 构造 hreflang alternate 列表。
- * en 系 geo / WW 无 alternate（页面本身即英文）。
+ * Build the hreflang alternate list for a given basePath.
+ * English geos / WW have no alternates (the page itself is English).
  */
 function buildAlternates(geoMeta, basePath) {
   if (!basePath || !geoMeta || geoMeta.lang === 'en') return [];
@@ -140,7 +141,7 @@ function buildAlternates(geoMeta, basePath) {
 }
 
 /**
- * 语言切换 nav：当地语言 ↔ English。en 系 geo 不渲染。
+ * Language-switch nav: local language ↔ English. Not rendered for English geos.
  */
 function buildLangSwitch(geoMeta, lang, basePath) {
   if (!basePath || !geoMeta || geoMeta.lang === 'en') return '';
@@ -160,8 +161,8 @@ function buildLangSwitch(geoMeta, lang, basePath) {
  * @param {string} [o.lang] - html lang attr
  * @param {string} o.bodyHtml
  * @param {string} [o.assetsPrefix] - relative path to assets root, e.g. "../../"
- * @param {string} [o.canonicalPath] - 用于 <link rel="canonical">（不含域名，可含 ?lang=en）
- * @param {{hreflang:string,path:string}[]} [o.alternates] - hreflang 备选语言版本
+ * @param {string} [o.canonicalPath] - path for <link rel="canonical"> (no domain, may include ?lang=en)
+ * @param {{hreflang:string,path:string}[]} [o.alternates] - hreflang alternate language versions
  */
 export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canonicalPath, alternates = [] }) {
   const dir = RTL_LANGS.has(lang.split('-')[0]) ? 'rtl' : 'ltr';
@@ -171,13 +172,13 @@ export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canoni
   const alternateTags = alternates
     .map((a) => `<link rel="alternate" hreflang="${escAttr(a.hreflang)}" href="${escAttr(SITE_BASE + a.path)}">`)
     .join('\n');
-  // 从 canonicalPath 推断当前 geo，用于 header region picker 显示当前地区
+  // Infer current geo from canonicalPath so the header region picker shows it
   const currentGeo = (() => {
     const m = (canonicalPath || '').match(/^\/geo\/([A-Z]{2})\//);
     return (m && GEO_BY_CODE[m[1]]) ? m[1] : 'WW';
   })();
   const currentGeoMeta = GEO_BY_CODE[currentGeo] || GEO_BY_CODE.WW;
-  // region picker 下拉项：用 flag-icons SVG（select/option 只能放纯文本，故改自定义下拉）
+  // Region picker options: use flag-icons SVG (select/option only accepts plain text, so a custom dropdown is used)
   const regionOptions = GEOS.map((g) => {
     const href = g.code === 'WW'
       ? `${assetsPrefix}index.html`
@@ -271,7 +272,7 @@ ${bodyHtml}
   overlay.addEventListener('click', hide);
   document.addEventListener('keydown', function(e){ if(e.key==='Escape') hide(); });
 })();
-// 把 "started HH:MM UTC" 按访问者本地时区重写
+// Rewrite "started HH:MM UTC" to the visitor's local timezone
 (function(){
   var els = document.querySelectorAll('[data-started]');
   if(!els.length) return;
@@ -286,10 +287,10 @@ ${bodyHtml}
     });
   } catch(e) {}
 })();
-// 把 [data-obs-iso] 区块标题按访问者访问时间重写为相对时间
-// （11min ago / 1 hour ago / 5 hours ago … / Yesterday / 2026-07-31）。
-// 首个标题用最新桶 observed_at，后续标题用各自桶的 observed_at，
-// 这样相对时间会随访问时刻自然递增（1h→5h→9h…）。
+// Rewrite [data-obs-iso] section titles to relative time based on the visitor's current time
+// (11min ago / 1 hour ago / 5 hours ago … / Yesterday / 2026-07-31).
+// The first title uses the latest bucket's observed_at, later titles use their own bucket's observed_at,
+// so the relative time naturally increases with the time of visit (1h→5h→9h…).
 (function(){
   var els = document.querySelectorAll('[data-obs-iso]');
   if(!els.length) return;
@@ -316,7 +317,7 @@ ${bodyHtml}
     el.textContent = y + '-' + m + '-' + dd;
   });
 })();
-// region picker 自定义下拉：点击触发器 toggle，点外部/Esc 关闭，带搜索过滤
+// Region picker custom dropdown: click trigger to toggle, click outside/Esc to close, with search filter
 (function(){
   var picker = document.getElementById('regionPicker');
   if(!picker) return;
@@ -357,7 +358,7 @@ ${bodyHtml}
  * @param {import('./fetchTrends.js').TrendItem & {intro?: string|null, news?: any[]}} o.trend
  * @param {string} o.geoCode
  * @param {string} o.assetsPrefix - relative to page (e.g. "../../")
- * @param {string} [o.lang] - 渲染语言；'en' 时（且该卡 geo 非英语）链接到英文变体
+ * @param {string} [o.lang] - render language; when 'en' (and the card's geo is non-English) link to the English variant
  */
 export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showGeoFlag = false, lang }) {
   const t = trend;
@@ -365,7 +366,7 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
   const enVariant = cardGeo.lang && cardGeo.lang !== 'en' && lang === 'en';
   const langSuffix = enVariant ? '?lang=en' : '';
   const hasPic = !!t.picture;
-  // 缩略图 fallback: 关键词首字母
+  // Thumbnail fallback: first letter of the keyword
   const initial = escape((t.keyword || '?').trim().charAt(0).toUpperCase());
   const vol = t.search_volume_raw || formatInt(t.search_volume_num ?? 0);
   const started = t.started_at
@@ -377,8 +378,8 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
       ? safeJson(t.news_json, [])
       : (t.news ?? []);
 
-  // WW 聚合页上每条 keyword 来自不同 geo，显示来源旗帜方便区分
-  // （showGeoFlag 仅在 WW 页传 true；普通 geo 页传 false 不显示）
+  // On the WW aggregate page each keyword comes from a different geo; show the source flag to tell them apart
+  // (showGeoFlag is true only on the WW page; false on regular geo pages hides it)
   const sourceFlag = showGeoFlag && t.geo
     ? `<span class="geo-flag" title="${escape(t.geo)}">${flagHtml(t.geo)}</span>`
     : '';
@@ -457,14 +458,14 @@ function safeJson(s, fb) { try { return JSON.parse(s); } catch { return fb; } }
  * @param {boolean} o.isLatest - if this page is /geo/XX/index.html
  * @param {object[]} o.trends  - rows from DB, each with intro/news_json
  * @param {string[]} o.availableDates - for nav (most recent first)
- * @param {string} [o.lang]    - 渲染语言（'en' 或 geoMeta.lang）
+ * @param {string} [o.lang]    - render language ('en' or geoMeta.lang)
  */
 export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang, sections = [], latestTimeIso }) {
   const assetsPrefix = '../../';
   const flag = flagHtml(geoMeta.code, geoMeta.name);
   const renderLang = lang || geoMeta.lang;
 
-  // canonical / hreflang basePath：latest 用 /geo/XX/，日期页用 /geo/XX/date.html
+  // canonical / hreflang basePath: latest uses /geo/XX/, date pages use /geo/XX/date.html
   const basePath = isLatest
     ? `/geo/${geoMeta.code}/`
     : `/geo/${geoMeta.code}/${date}.html`;
@@ -477,7 +478,7 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang,
   const showGeoFlag = geoMeta.code === 'WW';
   const useHoursView = sections && sections.length > 0;
 
-  // latest geo 页用 4h 横排（latest + time-ago 桶）；历史日期页保持单列 + show-more。
+  // Latest geo page uses a 4h horizontal layout (latest + time-ago buckets); historical date pages keep a single column with show-more.
   let listHtml;
   if (useHoursView) {
     const buckets = [
@@ -544,8 +545,8 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang,
 // Region switcher bar — shared by home page and geo pages
 
 /**
- * @param {string} currentGeoCode - 高亮的 geo code（对应当前页）
- * @param {string} assetsPrefix  - 相对站点根的路径前缀，例如 '../../'
+ * @param {string} currentGeoCode - highlighted geo code (matches the current page)
+ * @param {string} assetsPrefix  - path prefix relative to the site root, e.g. '../../'
  */
 function regionBar(currentGeoCode, assetsPrefix) {
   return GEOS.map((g) => {
@@ -644,7 +645,7 @@ export function geoArchivePage({ geoMeta, dates }) {
  * @param {object[]} o.history - rows from trend_snapshots (peak per date) for this keyword,
  *        ordered by date DESC. fields: date, rank, search_volume_num,
  *        search_volume_raw, started_at, news_json
- * @param {string} [o.lang] - 渲染语言
+ * @param {string} [o.lang] - render language
  */
 export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount = 0, topGeos = [] }) {
   const assetsPrefix = '../../../';
@@ -652,7 +653,7 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
   const renderLang = lang || geoMeta.lang;
   const latest = history[0];
 
-  // 该 keyword 最近出现的国家（跨 geo）：flag 行 + 计数。
+  // Countries where this keyword recently appeared (across geos): flag row + count.
   const enVariant = isEnVariantPage(geoMeta, renderLang);
   const langSuffix = enVariant ? '?lang=en' : '';
   const countriesRow = geoCount > 0
@@ -719,7 +720,7 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
     </div>
   </div>`;
 
-  // sparkline-ish bar timeline（纯 HTML，按天显示峰值搜索量，宽度归一化到 peak）
+  // Sparkline-ish bar timeline (pure HTML; per-day peak volume, width normalized to peak)
   const timeline = history
     .slice()
     .reverse()
@@ -795,11 +796,11 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
  * @param {object[]} o.items - WW latest-bucket snapshots (already ranked 1..N by volume)
  * @param {string[]} [o.availableDates] - WW historical dates for datebar (most recent first)
  * @param {string} [o.geoCode='WW'] - which geo this home view represents
- * @param {string} [o.latestTimeIso] - 最新桶 observed_at 的 ISO 形式（供前端计算相对时间）
- * @param {{label:string, items:object[], obsIso?:string}[]} [o.sections] - 更早的 time-ago 区块
+ * @param {string} [o.latestTimeIso] - ISO form of the latest bucket's observed_at (for client-side relative time)
+ * @param {{label:string, items:object[], obsIso?:string}[]} [o.sections] - earlier time-ago sections
  */
-// 渲染横向 time-columns：latest + time-ago 桶，每桶一列。
-// homePage（WW）与 geoPage（地区 latest）共用，保证两处列结构一致。
+// Render horizontal time-columns: latest + time-ago buckets, one column each.
+// Shared by homePage (WW) and geoPage (regional latest) to keep column structure consistent.
 function renderTimeColumns(buckets, { geoCode, assetsPrefix, showGeoFlag, lang }) {
   return buckets.map((b, i) => {
     const cards = b.items
@@ -816,19 +817,19 @@ function renderTimeColumns(buckets, { geoCode, assetsPrefix, showGeoFlag, lang }
 export function homePage({ items, availableDates = [], geoCode = 'WW', latestTimeIso, sections = [] }) {
   const geoMeta = GEO_BY_CODE[geoCode] || GEO_BY_CODE.WW;
   const isWW = geoCode === 'WW';
-  // WW 永远是英文 summary 视图
+  // WW is always the English summary view
   const renderLang = 'en';
 
-  // 所有时间桶：最新 + 更早的 time-ago 区块，横向并排展示
+  // All time buckets: latest + earlier time-ago sections, shown side by side
   const buckets = [
     { label: 'Latest', obsIso: latestTimeIso, items },
     ...sections.map((s) => ({ label: s.label, obsIso: s.obsIso, items: s.items })),
   ];
 
-  // 所有桶横向并排：每列渲染全部 TOP 100，靠 CSS content-visibility 跳过视口外卡片
+  // All buckets side by side: each column renders the full TOP 100; CSS content-visibility skips off-screen cards
   const sectionsHtml = renderTimeColumns(buckets, { geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang });
 
-  // 更早日期导航放在所有桶之后：日期 pills + datepicker
+  // Older-date navigation placed after all buckets: date pills + datepicker
   const olderDateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
 
   const titleFlag = flagHtml(geoCode, geoMeta.name);
@@ -853,8 +854,8 @@ export function homePage({ items, availableDates = [], geoCode = 'WW', latestTim
   });
 }
 
-// 首页底部「更早日期」导航：只列日期 pills + datepicker，不含 "Latest" pill。
-// WW 日期页是 Pages Functions 动态聚合页。
+// Home-page bottom "older dates" navigation: only date pills + datepicker, no "Latest" pill.
+// WW date pages are dynamically aggregated by Pages Functions.
 function buildHomeDateNav(dates, dateHrefPrefix) {
   if (!dates || !dates.length) return '';
   const pillsDates = dates.slice(0, 7);

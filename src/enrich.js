@@ -1,38 +1,41 @@
-// Enrich：为缺少简介的关键词生成简介（当地语言），并把非英语简介翻译成英文。
-// 用法:
-//   node src/enrich.js                       # 今天，所有 geos
-//   node src/enrich.js US JP                 # 只指定 geo
+// Enrich: generate intros (in the local language) for keywords missing them, and
+// translate non-English intros into English.
+// Usage:
+//   node src/enrich.js                       # today, all geos
+//   node src/enrich.js US JP                 # specific geos only
 //   node src/enrich.js --date 2026-04-25 US
-//   node src/enrich.js --keyword "anthony edwards" --geo US   # 强制单条重生成
-//   node src/enrich.js --limit 20            # 本次最多跑多少条（省配额）
-//   node src/enrich.js --top 50              # 每个 geo 只处理 volume 前 50（默认 50，0=不限）
-//   node src/enrich.js --only-lang en        # 只补英文版本（翻译现有当地 intro）
-//   node src/enrich.js --only-lang local     # 只补当地语言版本
-//   node src/enrich.js --backfill-en         # 扫描所有缺 intro_en 的历史行并翻译
-//   node src/enrich.js --azure-top 10        # 每个非英语 geo 前 10 走 Azure，其余走 Google（默认 10）
+//   node src/enrich.js --keyword "anthony edwards" --geo US   # force-regenerate a single item
+//   node src/enrich.js --limit 20            # cap items this run (saves quota)
+//   node src/enrich.js --top 50              # only top 50 by volume per geo (default 50, 0 = unlimited)
+//   node src/enrich.js --only-lang en        # only fill English (translate existing local intro)
+//   node src/enrich.js --only-lang local     # only fill the local-language version
+//   node src/enrich.js --backfill-en         # scan all historical rows missing intro_en and translate them
+//   node src/enrich.js --azure-top 10        # top 10 per non-English geo via Azure, rest via Google (default 10)
 //
-// 逻辑：
-//   1) 从 trend_snapshots 取当天每个 (geo, keyword) 的峰值快照（含 news_json）
-//   2) LEFT JOIN keyword_intro：判断还缺哪种语言
-//        - 当地语言（geoMeta.lang）缺失 → 生成当地语言
-//        - 当地语言非 en 且英文缺失     → 翻译当地 intro 成英文（分层路由）
-//        - 当地语言 = en 时只生成一份，存 intro，intro_en 留空（渲染时回退）
-//   3) 翻译分层（assignTiers）：每个非英语 geo 内按 volume 排序，
-//        top-N（--azure-top，默认 10）→ Azure Translator（高质量，免费层 2M 字符/月）
-//        其余                          → Google 免费 gtx 端点（与 googletrans 同源）
-//      英语 geo（lang='en'）不翻译。
-//   4) COALESCE upsert：只更新本次生成/翻译过的字段，不覆盖已有的另一种语言
-//   5) 失败不阻断整轮，记录到日志
+// Logic:
+//   1) Take the peak snapshot (including news_json) for each (geo, keyword) today from trend_snapshots.
+//   2) LEFT JOIN keyword_intro to decide which language is still missing:
+//        - Local language (geoMeta.lang) missing        → generate local-language intro
+//        - Local language non-en and English missing    → translate local intro to English (tiered routing)
+//        - Local language = en: generate once, store in intro, leave intro_en NULL (renderer falls back)
+//   3) Translation tiering (assignTiers): within each non-English geo, sort by volume —
+//        top-N (--azure-top, default 10) → Azure Translator (high quality, free tier 2M chars/month)
+//        the rest                        → Google free gtx endpoint (same source as googletrans)
+//      English geos (lang='en') are not translated.
+//   4) COALESCE upsert: only overwrite fields actually generated/translated this run;
+//      don't clobber the other language already stored.
+//   5) Failures don't abort the whole run; they are logged.
 
 import { queryAll, executeBatch } from './db.js';
 import { generateIntro } from './providers.js';
 import { translate } from './translate.js';
 import { GEOS, GEO_BY_CODE } from './geos.js';
 
-// 英语 geo 中仍需把 intro 翻译成 intro_en 的特例。
-// 原因：snippet provider 不保证返回英文（常返回新闻源语种，如 real madrid 的西班牙语），
-// 这些 en geo 的 intro_en 为空，页面会显示外语。IN 暂列入；其余 en geo 不动。
-// 这些 geo 始终走 Google 免费翻译，不消耗 Azure 配额。
+// Special English geos whose intro still needs translating into intro_en.
+// Reason: the snippet provider doesn't guarantee English (it often returns the news source
+// language, e.g. Spanish for "real madrid"), leaving intro_en empty for these en geos and
+// showing foreign text on the page. IN is included for now; other en geos are untouched.
+// These geos always use Google free translation and don't consume Azure quota.
 const EN_GEOS_NEED_EN_INTRO = new Set(['IN']);
 
 const args = process.argv.slice(2);
@@ -80,7 +83,7 @@ if (flags.onlyLang && !['en', 'local'].includes(flags.onlyLang)) {
   process.exit(1);
 }
 
-// --keyword 模式：单条生成，不管 date
+// --keyword mode: generate a single item, ignoring date.
 if (flags.keyword) {
   const geo = flags.geo ?? 'US';
   const geoMeta = GEO_BY_CODE[geo];
@@ -107,11 +110,12 @@ if (flags.keyword) {
   process.exit(0);
 }
 
-// 批量模式
+// Batch mode.
 const candidates = flags.backfillEn
   ? await collectBackfillEn(targetGeos)
   : await collectCandidates(targetGeos, flags.date, flags.force, flags.onlyLang);
-// 给每个 doEn 候选分配翻译分层：每个 geo 内按 volume 降序，top-N → azure，其余 → google。
+// Assign a translation tier to each doEn candidate: within each geo, sort by volume
+// descending — top-N → azure, the rest → google.
 assignTiers(candidates, flags.azureTop);
 const topped = flags.top > 0 && !flags.backfillEn ? applyTopPerGeo(candidates, flags.top) : candidates;
 const list = flags.limit ? topped.slice(0, flags.limit) : topped;
@@ -165,10 +169,10 @@ console.log(`Done. ok=${ok}, fail=${fail}, skipped=${candidates.length - list.le
 
 async function collectCandidates(geos, date, force, onlyLang) {
   const geoList = geos.map((g) => `'${g.code}'`).join(',');
-  // 当天每个 (geo, keyword) 的峰值快照；LEFT JOIN keyword_intro 判断缺哪种语言
+  // Peak snapshot for each (geo, keyword) today; LEFT JOIN keyword_intro to see which language is missing.
   const joinCond = 'LEFT JOIN keyword_intro i ON i.keyword = t.keyword AND i.geo = t.geo';
-  // 指定 --date 时按该日期过滤；否则取每个 geo 的最新本地日期
-  // （date 列现在是本地日期，单一 UTC 今天无法匹配所有时区）。
+  // When --date is given, filter by that date; otherwise take each geo's latest local date
+  // (the date column is now a local date, so a single UTC "today" can't match all time zones).
   const dateJoin = date
     ? ''
     : 'JOIN (SELECT geo AS g, MAX(date) AS d FROM trend_snapshots GROUP BY geo) m ON m.g = s.geo AND m.d = s.date';
@@ -202,7 +206,7 @@ async function collectCandidates(geos, date, force, onlyLang) {
       r.intro_lang,
       force,
     );
-    // --only-lang 过滤：只补指定语言
+    // --only-lang filter: only fill the specified language.
     if (onlyLang === 'en') {
       c.doLocal = false;
     } else if (onlyLang === 'local') {
@@ -214,13 +218,14 @@ async function collectCandidates(geos, date, force, onlyLang) {
 }
 
 /**
- * --backfill-en 模式：直接扫描 keyword_intro，把所有「有当地 intro、缺英文」的行
- * 翻译补齐。不依赖 trend_snapshots 的日期范围，覆盖历史所有 keyword。
+ * --backfill-en mode: scan keyword_intro directly and translate every row that has a
+ * local intro but is missing English. Doesn't depend on trend_snapshots date ranges
+ * and covers all historical keywords.
  */
 async function collectBackfillEn(geos) {
   const geoList = geos.map((g) => `'${g.code}'`).join(',');
-  // LEFT JOIN trend_snapshots 取每个 (keyword, geo) 的历史峰值 volume，用于 top-N 分层。
-  // WHERE 包含 EN_GEOS_NEED_EN_INTRO（如 IN）——这些英语 geo 也需要回填 intro_en。
+  // LEFT JOIN trend_snapshots to get each (keyword, geo) historical peak volume for top-N tiering.
+  // WHERE includes EN_GEOS_NEED_EN_INTRO (e.g. IN) — these English geos also need intro_en backfill.
   const enNeedList = [...EN_GEOS_NEED_EN_INTRO].map((g) => `'${g}'`).join(',');
   const langClause = enNeedList
     ? `(i.lang != 'en' OR i.geo IN (${enNeedList}))`
@@ -255,11 +260,12 @@ async function collectBackfillEn(geos) {
 }
 
 /**
- * 给候选分配翻译分层。候选须已按 geo ASC、volume DESC 排序。
- * 每个 geo 内 volume 前 N 名（且需要翻译 doEn）→ 'azure'，其余 → 'google'。
- * azureTopN <= 0 时全部走 google（省 Azure 配额）。
- * 排名统计包含 doEn=false 的候选（它们占据 top-N 名额但不翻译），
- * 这样「top-N」真正反映该 geo 热度排名。
+ * Assign a translation tier to each candidate. Candidates must already be sorted by
+ * geo ASC, volume DESC. Within each geo, the top-N by volume (that need translation, doEn)
+ * → 'azure', the rest → 'google'. When azureTopN <= 0 everything goes to google
+ * (saves Azure quota). Candidates with doEn=false still count toward the ranking
+ * (they occupy top-N slots but aren't translated), so "top-N" reflects the geo's true
+ * hotness ranking.
  */
 function assignTiers(candidates, azureTopN) {
   if (azureTopN <= 0) {
@@ -272,27 +278,29 @@ function assignTiers(candidates, azureTopN) {
     if (c.geo !== curGeo) { curGeo = c.geo; rank = 0; }
     rank++;
     if (!c.doEn) continue;
-    // 英语 geo 特例（如 IN）始终走 Google 免费，不消耗 Azure 配额。
+    // English-geo exceptions (e.g. IN) always use Google free; don't consume Azure quota.
     if (EN_GEOS_NEED_EN_INTRO.has(c.geo)) { c.tier = 'google'; continue; }
     c.tier = rank <= azureTopN ? 'azure' : 'google';
   }
 }
 
 /**
- * 构造单个候选对象，计算还需生成/翻译哪些语言。
+ * Build a single candidate object, computing which languages still need to be
+ * generated/translated.
  * @param {{keyword:string,geo:string,news:any[]}} base
  * @param {{lang:string}|undefined} geoMeta
- * @param {string|null} intro      - 已缓存的当地语言 intro
- * @param {string|null} introEn    - 已缓存的英文 intro
- * @param {string|null} introLang  - 已缓存行记录的 lang
- * @param {boolean} force          - 强制重生成
+ * @param {string|null} intro      - cached local-language intro
+ * @param {string|null} introEn    - cached English intro
+ * @param {string|null} introLang  - lang recorded on the cached row
+ * @param {boolean} force          - force regeneration
  */
 function makeCandidate(base, geoMeta, intro, introEn, introLang, force) {
   const localLang = geoMeta?.lang ?? 'en';
-  // 非英语 geo，或 EN_GEOS_NEED_EN_INTRO 中的英语 geo（如 IN），都需要 intro_en。
+  // Non-English geos, or English geos in EN_GEOS_NEED_EN_INTRO (e.g. IN), need intro_en.
   const needEn = localLang !== 'en' || EN_GEOS_NEED_EN_INTRO.has(base.geo);
-  // news 为空时跳过 AI 生成：模型在无新闻线索时容易幻觉出不相关内容
-  // （如把 geo=DE 误读成 Delaware）。已有当地 intro 时的英文翻译不受影响。
+  // Skip AI generation when there's no news: with no news leads the model easily hallucinates
+  // unrelated content (e.g. misreading geo=DE as Delaware). Translating an existing local
+  // intro to English is unaffected.
   const hasNews = Array.isArray(base.news) && base.news.length > 0;
   let doLocal = false;
   let doEn = false;
@@ -300,11 +308,11 @@ function makeCandidate(base, geoMeta, intro, introEn, introLang, force) {
     doLocal = true;
     doEn = needEn;
   } else if ((introLang == null || intro == null) && hasNews) {
-    // 没有缓存行或当地语言缺失：补齐当地语言（+ 英文翻译，如果 needEn）
+    // No cached row or local language missing: fill the local language (+ English translation if needEn).
     doLocal = true;
     doEn = needEn;
   } else if (needEn && introEn == null) {
-    // 当地语言已有，只缺英文 → 翻译
+    // Local language already present, only English missing → translate.
     doEn = true;
   }
   return { ...base, localLang, geoName: geoMeta?.name ?? base.geo, doLocal, doEn, existingLocalIntro: intro };
@@ -338,16 +346,18 @@ async function runOne(c) {
   }
 
   if (doEn) {
-    // 非英语 geo：把当地语言 intro 翻译成英文，而不是再次调用 AI 生成。
-    // 分层：top-N 走 Azure（高质量），其余走 Google 免费 gtx 端点。
-    // 两个 provider 都自动检测源语种，兼容混合语种 summary（如马来西亚英/马/中混排）。
+    // Non-English geo: translate the local-language intro to English rather than calling the
+    // AI again. Tiering: top-N via Azure (high quality), the rest via the Google free gtx
+    // endpoint. Both providers auto-detect the source language, supporting mixed-language
+    // summaries (e.g. Malaysia mixing English / Malay / Chinese).
     const source = localIntro || existingLocalIntro;
     if (!source) {
       console.warn(`  ⚠ [${c.geo}] "${c.keyword}" skip en: no local intro to translate`);
     } else {
       try {
-        // 传 from=localLang 作为 auto 误判时的纠错后备（en geo 除外：
-        // IN 等 en-geo 的 intro 可能是当地外语，需 auto 检测真实源语种）
+        // Pass from=localLang as a fallback for when auto-detect misfires (except for en geos:
+        // IN and similar en-geo intros may be in a foreign language, so auto-detect is needed
+        // to identify the real source language).
         const from = localLang !== 'en' ? localLang : undefined;
         enIntro = await translate(source, { to: 'en', from, tier: c.tier });
         const preview = enIntro.length > 80 ? enIntro.slice(0, 80) + '…' : enIntro;
@@ -359,14 +369,15 @@ async function runOne(c) {
     }
   }
 
-  // 当地语言 = en 时：生成的英文就是当地语言版本，存进 intro。
-  // 但 EN_GEOS_NEED_EN_INTRO（如 IN）例外——它们的 intro 可能是外语，
-  // 需要单独存英文翻译到 intro_en，渲染时优先取 intro_en。
+  // When the local language is en: the generated English is the local-language version,
+  // stored in intro. EN_GEOS_NEED_EN_INTRO (e.g. IN) is an exception — their intro may be
+  // in a foreign language, so the English translation goes into intro_en separately and the
+  // renderer prefers intro_en.
   let introOut = localIntro;
   let introEnOut = enIntro;
   if (localLang === 'en' && !EN_GEOS_NEED_EN_INTRO.has(c.geo)) {
     if (introOut == null) introOut = enIntro;
-    introEnOut = null; // en geo 不单独存英文，渲染时回退到 intro
+    introEnOut = null; // en geo: don't store English separately; renderer falls back to intro.
   }
   return { keyword: c.keyword, geo: c.geo, lang: localLang, intro: introOut, intro_en: introEnOut, model };
 }
@@ -374,10 +385,11 @@ async function runOne(c) {
 async function flushBatch(results) {
   if (!results.length) return;
   const nowSec = Math.floor(Date.now() / 1000);
-  // COALESCE upsert：只覆盖本次生成/翻译过的字段（非 NULL），保留另一种语言。
-  // intro/intro_en 均允许 NULL，故仅补英文时 intro 传 NULL 安全——既有行经
-  // ON CONFLICT DO UPDATE 用 COALESCE 保留原 intro；新行则写入 NULL。
-  // model 同样用 COALESCE：仅翻译失败（model=NULL）时不覆盖原 AI model。
+  // COALESCE upsert: only overwrite fields actually generated/translated this run (non-NULL),
+  // preserving the other language. intro/intro_en both allow NULL, so passing NULL for intro
+  // when only filling English is safe — existing rows keep their intro via
+  // ON CONFLICT DO UPDATE COALESCE, new rows get NULL. model uses COALESCE too, so a failed
+  // translation (model=NULL) doesn't overwrite the original AI model.
   const stmts = results.map((r) => ({
     sql: `INSERT INTO keyword_intro (keyword, geo, lang, intro, intro_en, model, generated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)

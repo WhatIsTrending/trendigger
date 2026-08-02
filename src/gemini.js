@@ -1,19 +1,19 @@
 // Gemini API client (zero dependencies).
 //
-// 使用 REST API (`generateContent`)，要求 JSON 输出以减少解析错误。
-// 模型默认 gemini-2.5-flash（免费额度最宽松）。
+// Uses the REST API (`generateContent`) and requests JSON output to reduce parse errors.
+// Default model is gemini-2.5-flash (most generous free tier).
 //
-// API key 来源（按优先级）：
-//   1) 参数 opts.apiKey
-//   2) env GEMINI_API_KEY
-//   3) ./gemini-key 文件内容（方便本地开发）
+// API key sources (in priority order):
+//   1) opts.apiKey argument
+//   2) GEMINI_API_KEY env var
+//   3) contents of ./gemini-key file (convenient for local dev)
 import { readFile } from 'node:fs/promises';
 
 const DEFAULT_MODEL = 'gemini-2.5-flash';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-// Language label 用在 prompt 里告诉模型用哪种语言回答。
-// 比 ISO code 更稳定。
+// Language label inserted into the prompt to tell the model which language to use.
+// More stable than ISO codes.
 const LANG_LABEL = {
   en: 'English',
   ja: 'Japanese',
@@ -34,14 +34,14 @@ const LANG_LABEL = {
 
 let cachedKey = null;
 
-// RPM rate limiter：确保两次请求之间至少隔 MIN_INTERVAL_MS。
-// 付费档 flash 的 RPM 上限 1000（~16 RPS），我们用 150ms 间隔 ≈ 400 RPM，
-// 留充足余量不撞限流。可通过 GEMINI_MIN_INTERVAL_MS 环境变量覆盖。
+// RPM rate limiter: ensure at least MIN_INTERVAL_MS between requests.
+// Paid-tier flash allows 1000 RPM (~16 RPS); a 150ms interval (~400 RPM) leaves
+// ample headroom to avoid throttling. Override via GEMINI_MIN_INTERVAL_MS.
 const MIN_INTERVAL_MS = Number(process.env.GEMINI_MIN_INTERVAL_MS) || 150;
 let lastRequestAt = 0;
 let gate = Promise.resolve();
 async function rateLimit() {
-  // 串行化闸门：并发调用者排队通过
+  // Serialization gate: concurrent callers queue up and pass through one at a time.
   const myTurn = gate.then(async () => {
     const now = Date.now();
     const wait = MIN_INTERVAL_MS - (now - lastRequestAt);
@@ -67,7 +67,7 @@ async function loadApiKey(explicit) {
 }
 
 /**
- * 为一个关键词生成 3-4 句简介。
+ * Generate a 3-4 sentence intro for a keyword.
  * @param {object} input
  * @param {string} input.keyword
  * @param {string} input.geo            - 'US', 'JP', ...
@@ -86,7 +86,7 @@ export async function generateIntro(input, opts = {}) {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: {
       temperature: 0.3,
-      // 强制 JSON，便于解析
+      // Force JSON for easier parsing.
       responseMimeType: 'application/json',
       responseSchema: {
         type: 'object',
@@ -96,7 +96,7 @@ export async function generateIntro(input, opts = {}) {
         required: ['intro'],
       },
     },
-    // 关闭安全过滤到最宽松（新闻类容易撞车）
+    // Loosen safety filters to the most permissive setting (news content trips them easily).
     safetySettings: [
       'HARM_CATEGORY_HARASSMENT',
       'HARM_CATEGORY_HATE_SPEECH',
@@ -110,7 +110,7 @@ export async function generateIntro(input, opts = {}) {
   const resText = await fetchWithRetry(url, body, timeoutMs);
   const parsed = JSON.parse(resText);
 
-  // 错误排查
+  // Error diagnostics.
   if (parsed.error) {
     throw new Error(`Gemini API error: ${parsed.error.message || JSON.stringify(parsed.error)}`);
   }
@@ -126,7 +126,7 @@ export async function generateIntro(input, opts = {}) {
     const obj = JSON.parse(text);
     intro = (obj.intro || '').trim();
   } catch {
-    // 模型偶尔不守规矩，退化为文本
+    // Model occasionally misbehaves; fall back to plain text.
     intro = text.trim();
   }
   if (!intro) throw new Error('Gemini returned empty intro');
@@ -136,7 +136,8 @@ export async function generateIntro(input, opts = {}) {
 
 function buildPrompt({ keyword, geo, geoName, lang, news = [] }) {
   const langLabel = LANG_LABEL[lang] ?? lang ?? 'English';
-  // 用完整国家/地区名（如 Germany）代替 ISO code（DE），避免模型把 DE 误读成 Delaware
+  // Use the full country/region name (e.g. Germany) instead of the ISO code (DE)
+  // so the model doesn't misread DE as Delaware.
   const region = geoName || geo;
   const newsBlock = news.length
     ? news
@@ -148,10 +149,11 @@ function buildPrompt({ keyword, geo, geoName, lang, news = [] }) {
         .join('\n')
     : '  (no related news headlines available)';
 
-  // 写法要点：
-  // - 基于 news headlines 描述具体事件，不分析"为什么热"（AI 分析增长原因容易套话）
-  // - headlines 是事实来源，禁止"details are limited"套话
-  // - 模型知识只用于"keyword 是什么"，当前状态以 news 为准
+  // Writing guidelines:
+  // - Describe the specific event from the news headlines; don't analyze "why it's hot"
+  //   (AI reasoning about growth tends to produce boilerplate).
+  // - Headlines are the source of truth; forbid "details are limited" filler.
+  // - Model knowledge is only for "what is the keyword"; current state comes from news.
   return `You are writing a brief background summary for a trending search term.
 
 TERM: "${keyword}"
@@ -193,10 +195,10 @@ async function fetchWithRetry(url, body, timeoutMs) {
       const text = await res.text();
       if (res.ok) return text;
 
-      // 429 / 5xx 重试；4xx 其它直接抛
+      // Retry 429 / 5xx; throw on other 4xx.
       if (res.status === 429 || res.status >= 500) {
         lastErr = new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
-        // 429 时等更久，给 RPM 窗口清空
+        // Wait longer on 429 to let the RPM window drain.
         await sleep(res.status === 429 ? 15000 : backoff(attempt));
         continue;
       }
@@ -215,5 +217,5 @@ async function fetchWithRetry(url, body, timeoutMs) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// 2s, 5s, ...（轻度抖动）
+// 2s, 5s, ... (with light jitter)
 const backoff = (attempt) => (attempt === 1 ? 2000 : 5000) + Math.floor(Math.random() * 500);

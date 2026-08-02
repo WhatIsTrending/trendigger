@@ -1,8 +1,9 @@
-// 支持的国家/地区清单。lang 字段在后续生成简介（Gemini 阶段）时使用。
-// tz: IANA 时区，用于把 observed_at(UTC) 换算成本地日期，作为「一天」的分组依据。
-// fetchGeo: 传给 google-trends-now 的 geo 参数；null 表示该 geo 无法直接抓取，
-//   需在构建期由其余 geo 聚合得到（WW 即如此：google-trends-now 对 geo='' 返回 0 条）。
-// 清单覆盖 Google Trends Trending Now 支持的全部 125 个国家/地区（+ WW 全球聚合）。
+// Supported country/region list. The lang field is used later when generating intros (Gemini stage).
+// tz: IANA timezone, used to convert observed_at (UTC) into the local date for "per day" grouping.
+// fetchGeo: geo parameter passed to google-trends-now; null means this geo cannot be fetched directly
+//   and must be aggregated from other geos at build time (WW is such a case: google-trends-now
+//   returns 0 results for geo='').
+// The list covers all 125 countries/regions supported by Google Trends Trending Now (+ WW global aggregate).
 export const GEOS = [
   { code: 'WW', name: 'Worldwide',    lang: 'en', tz: 'UTC', fetchGeo: null },
   { code: 'AL', name: 'Albania',                lang: 'sq',    tz: 'Europe/Tirane' },

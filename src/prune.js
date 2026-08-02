@@ -1,10 +1,10 @@
-// 删掉超过保留期的快照数据。
-// 默认保留 365 天，可用 --days N 覆盖。
-// keyword_intro 不删（缓存，比 365 天还稀缺，省 API 调用）。
+// Delete snapshot data older than the retention window.
+// Default retention is 365 days; override with --days N.
+// keyword_intro is never pruned (cached data is scarcer than 365d, saves API calls).
 //
-// 新 schema：trend_snapshots 按 date 删，collection_runs 按 date 删
-// （FK ON DELETE CASCADE 理论上会级联，但 D1 不一定默认开 PRAGMA foreign_keys，
-//  两张表都显式删最稳）。
+// New schema: delete from trend_snapshots by date and collection_runs by date.
+// (FK ON DELETE CASCADE would theoretically cascade, but D1 may not enable
+//  PRAGMA foreign_keys by default — explicitly deleting both tables is safest.)
 
 import { queryAll, executeBatch } from './db.js';
 

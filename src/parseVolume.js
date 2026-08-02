@@ -1,4 +1,4 @@
-// 把 Google Trends 的 approx_traffic 字符串解析为整数下界。
+// Parse a Google Trends approx_traffic string into an integer lower bound.
 //   "500+"     -> 500
 //   "10,000+"  -> 10000
 //   "1M+"      -> 1000000

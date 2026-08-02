@@ -1,10 +1,11 @@
-// 从 D1 读取并漂亮打印某天某 geo 的 trends（取当天每个 keyword 的峰值快照）。
-// 用法:
-//   node src/query.js                    # 今天 UTC + US
+// Read trends for a given day/geo from D1 and pretty-print them
+// (peaks per keyword for that day).
+// Usage:
+//   node src/query.js                    # today UTC + US
 //   node src/query.js US 2026-04-26
 //   node src/query.js JP
-//   node src/query.js --stats            # 打印整体统计
-//   node src/query.js --log 20           # 最近 20 条 collection_runs
+//   node src/query.js --stats            # overall stats
+//   node src/query.js --log 20           # last 20 collection_runs
 import { queryAll } from './db.js';
 import { GEO_BY_CODE } from './geos.js';
 

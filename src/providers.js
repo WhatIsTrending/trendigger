@@ -4,9 +4,9 @@ import { fetchArticleSnippet } from './fetchArticle.js';
 const PROVIDER = process.env.AI_PROVIDER || 'gemini';
 const FALLBACK_PROVIDER = process.env.FALLBACK_PROVIDER || '';
 
-// Circuit breaker: Cloudflare 免费 Workers AI 每天 10k neurons 上限。
-// 一旦撞到配额耗尽的 429，本轮剩余所有 cloudflare 调用直接跳过，
-// 避免 8 并发下每个 keyword 都重试 3×15s 把 CI 30min 跑爆。
+// Circuit breaker: Cloudflare free Workers AI has a 10k daily neuron cap.
+// Once we hit a quota-exhausted 429, skip all remaining cloudflare calls this run,
+// so 8-way concurrency doesn't retry 3×15s per keyword and blow the 30min CI budget.
 let cloudflareQuotaExhausted = false;
 
 function looksLikeCfQuotaError(status, body) {
@@ -102,7 +102,8 @@ async function cloudflareGenerateIntro(input, opts = {}) {
 
 function buildPrompt({ keyword, geo, geoName, lang, news = [] }) {
   const langLabel = LANG_LABEL[lang] ?? lang ?? 'English';
-  // 用完整国家/地区名（如 Germany）代替 ISO code（DE），避免模型把 DE 误读成 Delaware
+  // Use the full country/region name (e.g. Germany) instead of the ISO code (DE)
+  // so the model doesn't misread DE as Delaware.
   const region = geoName || geo;
   const newsBlock = news.length
     ? news
@@ -114,10 +115,11 @@ function buildPrompt({ keyword, geo, geoName, lang, news = [] }) {
         .join('\n')
     : '  (no related news headlines available)';
 
-  // 写法要点：
-  // - 基于 news headlines 描述具体事件，不分析"为什么热"（AI 分析增长原因容易套话）
-  // - headlines 是事实来源，禁止"details are limited"套话
-  // - 模型知识只用于"keyword 是什么"，当前状态以 news 为准
+  // Writing guidelines:
+  // - Describe the specific event from the news headlines; don't analyze "why it's hot"
+  //   (AI reasoning about growth tends to produce boilerplate).
+  // - Headlines are the source of truth; forbid "details are limited" filler.
+  // - Model knowledge is only for "what is the keyword"; current state comes from news.
   return `You are writing a brief background summary for a trending search term.
 
 TERM: "${keyword}"
@@ -237,8 +239,8 @@ async function cfFetchWithRetry(url, body, apiToken, timeoutMs) {
   throw lastErr ?? new Error('Unknown Cloudflare AI failure');
 }
 
-// 套话导语前缀（严格大小写匹配）：这些开头的 snippet 是新闻导语套话，
-// 信息量低，改用 news title 代替
+// Filler lead prefixes (case-sensitive): snippets starting with these are
+// low-info news-live boilerplate; fall back to the news title instead.
 const FILLER_PREFIXES = ['Follow ', 'Sigue ', 'Siga ', 'Segu', 'Live:', 'Watch ', 'Ver '];
 function isFillerLead(text) {
   return FILLER_PREFIXES.some((p) => text.startsWith(p));
@@ -254,7 +256,7 @@ async function snippetGenerateIntro(input, opts = {}) {
       if (!isFillerLead(snip)) {
         return { intro: snip, model: 'snippet-rss' };
       }
-      // snippet 是套话导语，跳过尝试下一条
+      // Snippet is filler; try the next item.
     }
 
     if (item.url) {
@@ -269,7 +271,7 @@ async function snippetGenerateIntro(input, opts = {}) {
     }
   }
 
-  // 所有 snippet 都是套话或不可用 → 用最长的 news title 代替
+  // All snippets are filler or unavailable → fall back to the longest news title.
   const titles = news
     .map((n) => n.title)
     .filter((t) => t && t.trim().length >= 20)

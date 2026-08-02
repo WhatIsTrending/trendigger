@@ -1,12 +1,12 @@
-// 抓取新闻文章并提取一段简短摘要。
-// 优先级：og:description > <meta name="description"> > <article> 第一段 > 任意 <p> 第一段
-// 不引入 readability / cheerio 等重依赖，保持 demo 体积。
+// Fetch a news article and extract a short snippet.
+// Priority: og:description > <meta name="description"> > first <p> in <article> > first <p> anywhere.
+// Avoids heavy deps like readability/cheerio to keep the demo small.
 //
-// 注意：这只是 demo 阶段的快捷方案。生产链路里我们会用 Gemini 基于标题集合生成简介，
-// 文章正文是“锦上添花”，不必要时跳过。
+// Note: this is a demo-stage shortcut. In production we use Gemini to generate intros from the
+// title set; full article body is a nice-to-have and skipped when unnecessary.
 
 const DEFAULT_TIMEOUT_MS = 6000;
-const MAX_HTML_BYTES = 300_000;        // 300 KB 截断，避免大页面
+const MAX_HTML_BYTES = 300_000;        // truncate at 300 KB to avoid huge pages
 const MAX_SNIPPET_LEN = 280;
 
 /**
@@ -35,7 +35,7 @@ export async function fetchArticleSnippet(url, opts = {}) {
     const ct = res.headers.get('content-type') || '';
     if (!ct.includes('html')) return null;
 
-    // 只读取前 N 字节，避免大文件
+    // Read only the first N bytes to avoid huge responses.
     const reader = res.body?.getReader();
     if (!reader) return null;
     const chunks = [];
@@ -69,7 +69,7 @@ function concatChunks(chunks, total) {
   return out;
 }
 
-/** 导出便于测试。 */
+/** Exported for testing. */
 export function extractSnippet(html) {
   const og = matchMeta(html, /property=["']og:description["']/i);
   if (og) return clip(og);
@@ -77,7 +77,7 @@ export function extractSnippet(html) {
   const desc = matchMeta(html, /name=["']description["']/i);
   if (desc) return clip(desc);
 
-  // <article>...<p>第一段</p>
+  // <article>...<p>first paragraph</p>
   const articleMatch = html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i);
   if (articleMatch) {
     const p = firstParagraph(articleMatch[1]);
@@ -90,7 +90,7 @@ export function extractSnippet(html) {
   return null;
 }
 
-// 从 HTML 中匹配 <meta ... content="...">，attributeMatcher 用于匹配 name/property 属性。
+// Match <meta ... content="..."> in HTML; attributeMatcher matches the name/property attribute.
 function matchMeta(html, attributeMatcher) {
   const metaRe = /<meta\b([^>]*)>/gi;
   let m;
@@ -108,7 +108,7 @@ function firstParagraph(html) {
   let m;
   while ((m = re.exec(html))) {
     const text = stripTags(m[1]).trim();
-    if (text.length >= 60) return text; // 跳过短段落（导航、版权等）
+    if (text.length >= 60) return text; // skip short paragraphs (nav, copyright, etc.)
   }
   return null;
 }

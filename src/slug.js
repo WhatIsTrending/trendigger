@@ -1,14 +1,16 @@
 // Keyword <-> filename slug.
-// 默认用简单规则生成文件名——保留可读性（英文/数字关键词一眼可认）。
-// 对 CJK/Thai/Arabic 等非拉丁语言，编码后可能超过文件系统 255-byte 文件名上限，
-// 此时 fallback 为哈希：`kw-<sha1[0:16]>`。
+// By default we generate filenames with simple rules to preserve readability
+// (English/numeric keywords are recognizable at a glance).
+// For non-Latin scripts (CJK/Thai/Arabic, etc.) the encoded form may exceed the filesystem's
+// 255-byte filename limit; in that case we fall back to a hash: `kw-<sha1[0:16]>`.
 //
-// 由于 fallback 不是可逆的纯编码，我们不再保证 keyword -> slug 之间完全可逆；
-// 但我们生成和反查都用同一个函数，只要两端一致就 OK。
+// Since the fallback is not a reversible pure encoding, keyword -> slug is no longer guaranteed
+// to be fully reversible. However, generation and reverse-lookup use the same function, so as
+// long as both ends agree it's fine.
 //
-// 兼容 Node.js 和 Cloudflare Workers 运行时。
+// Compatible with both Node.js and Cloudflare Workers runtimes.
 
-// macOS/ext4 文件名上限 255 字节；再加上 ".html" 和少许安全余量 → 220。
+// macOS/ext4 filename limit is 255 bytes; with ".html" and a small safety margin -> 220.
 const MAX_SLUG_BYTES = 220;
 
 function createSimpleHash(str) {

@@ -1,22 +1,22 @@
 // Static Site Generator (incremental).
 //
-// 输出目录结构：
+// Output directory layout:
 //   public/
 //     index.html
-//     geo/{CODE}/index.html            (= 最新日期，同时另存 YYYY-MM-DD.html)
+//     geo/{CODE}/index.html            (= latest date, also saved as YYYY-MM-DD.html)
 //     geo/{CODE}/{YYYY-MM-DD}.html
 //     geo/{CODE}/archive.html
-//     geo/{CODE}/keyword/{slug}.html   # 由 Pages Functions 动态渲染
+//     geo/{CODE}/keyword/{slug}.html   # dynamically rendered by Pages Functions
 //
-// 新 schema 下的查询：每个 (geo, date, keyword) 在一天内会有多个 4h 快照，
-// 用 ROW_NUMBER() OVER (PARTITION BY geo,date,query ORDER BY search_volume DESC, observed_at DESC)
-// 取当天 volume 峰值那条作为该关键词当天的代表行。
+// New-schema query: each (geo, date, keyword) has multiple 4h snapshots per day.
+// Use ROW_NUMBER() OVER (PARTITION BY geo,date,query ORDER BY search_volume DESC, observed_at DESC)
+// to pick the peak-volume row of the day as the representative for that keyword.
 //
 // CLI:
-//   node src/build.js                 # 增量
-//   node src/build.js --full          # 强制重写所有
-//   node src/build.js --clean         # 删 geo/ 与 index.html 后重建
-//   node src/build.js US JP           # 只构建指定 geo
+//   node src/build.js                 # incremental
+//   node src/build.js --full          # force rewrite everything
+//   node src/build.js --clean         # delete geo/ and index.html, then rebuild
+//   node src/build.js US JP           # build only the specified geos
 
 import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -36,10 +36,10 @@ import {
 
 const OUT = 'public';
 
-// 取每个 (geo, date, keyword) 当天 volume 峰值快照，并 LEFT JOIN keyword_intro。
-// started_at 转成 unix 秒以兼容 templates（旧 schema 也是 unix 秒）。
-// 同时取 intro（当地语言）和 intro_en（英文）：geo 静态页用 intro，
-// WW 首页聚合时用 intro_en（避免单页多语言 SEO 降权）。
+// Pick the peak-volume snapshot per (geo, date, keyword) and LEFT JOIN keyword_intro.
+// Convert started_at to unix seconds to match templates (old schema also used unix seconds).
+// Fetch both intro (local language) and intro_en (English): geo static pages use intro,
+// while the WW homepage aggregation uses intro_en (avoids multi-language SEO penalty on a single page).
 const PEAK_SNAPSHOT_SQL = `
 SELECT t.date, t.geo, t.keyword, t.search_volume_num, t.search_volume_raw,
        t.started_at, t.picture, t.news_json, t.trend_breakdown_json, t.explore_url,
@@ -61,8 +61,9 @@ SELECT t.date, t.geo, t.keyword, t.search_volume_num, t.search_volume_raw,
  WHERE t.rn = 1
  ORDER BY t.geo, t.date DESC, t.search_volume_num DESC`;
 
-// 近 48h 的原始快照（不做当日峰值合并），用于 WW 首页按 4h 采集桶聚合。
-// 每个桶取所有 geo 该 4h 窗口内的快照，跨 geo 按 keyword 去重（取 volume 最高）。
+// Raw snapshots from the last 48h (no per-day peak merging), used to aggregate
+// the WW homepage into 4h collection buckets. Each bucket takes all geos'
+// snapshots in that 4h window, deduped by keyword across geos (highest volume wins).
 const RECENT_BUCKETS_SQL = `
 SELECT s.observed_at, s.geo, s.query AS keyword,
        s.search_volume AS search_volume_num,
@@ -129,10 +130,10 @@ for (const [geo, m] of byGeoDate.entries()) {
   latestDate.set(geo, dates[0]);
 }
 
-// 近 48h 原始快照：WW 首页 + 各 geo latest 页的 4h 横排都用它，只查一次。
+// Raw 48h snapshots: shared by the WW homepage and each geo latest page's 4h columns, queried once.
 const recentCutoff = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
 const recentRows = await queryAll(RECENT_BUCKETS_SQL, [recentCutoff]);
-// 按 geo 分组，供各 geo latest 页构建 4h 横排桶
+// Group by geo so each geo latest page can build its 4h columns.
 const recentByGeo = new Map();
 for (const r of recentRows) {
   if (!recentByGeo.has(r.geo)) recentByGeo.set(r.geo, []);
@@ -141,10 +142,11 @@ for (const r of recentRows) {
 console.log(`Loaded ${recentRows.length} recent (48h) snapshot rows for hours-columns.`);
 
 // 2. Home page — Worldwide, with per-bucket time-ago sections ---------------
-// WW 无法直接抓取。改为按 4h 采集桶聚合：每个桶取所有 geo 该 4h 窗口内的快照，
-// 跨 geo 按 keyword 去重（取 volume 最高），按搜索量降序。
-// 首页展示「最新桶」TOP N 作为主列表，其后叠加最近若干桶（4h ago / 8h ago /
-// ... / Yesterday）作为 time-ago 区块，再用 datebar 链接到更早的日期页。
+// WW cannot be scraped directly. Aggregate by 4h collection bucket instead: each bucket
+// takes all geos' snapshots in that 4h window, deduped by keyword across geos (highest
+// volume wins), sorted by search volume desc. The homepage shows the "latest bucket" TOP N
+// as the main list, then appends several earlier buckets (4h ago / 8h ago / ... / Yesterday)
+// as time-ago sections, with the datebar linking to older date pages.
 const wwHome = await buildWwHomepage(byGeoDate, recentRows);
 await maybeWrite(
   join(OUT, 'index.html'),
@@ -188,8 +190,8 @@ for (const g of GEOS) {
     const isLatest = i === 0;
     let html;
     if (isLatest) {
-      // latest geo 页：4h 横排（latest + 6 time-ago），数据来自近 48h 快照；
-      // 无近 48h 数据时回退到当日峰值单列。
+      // Latest geo page: 4h columns (latest + 6 time-ago), sourced from the last 48h snapshots.
+      // Falls back to the single per-day peak column when no 48h data is available.
       const gb = buildGeoBucketsFromRows(recentByGeo.get(g.code) || [], g.lang);
       const hasRecent = gb.latestItems.length > 0;
       html = geoPage({
@@ -255,17 +257,17 @@ function sha1(input) {
   return createHash('sha1').update(input).digest('hex');
 }
 
-// 按 4h UTC 桶聚合 WW 首页。返回：
-//   latestItems  — 最新桶 TOP N（首页主列表）
-//   latestTime   — 最新桶内最大 observed_at，精确到分，如 "2026-08-01 18:35"
-//   latestTimeIso— 同上的 ISO 形式（供前端按访问者时区重写）
-//   latestDate   — 最新桶的本地日期（YYYY-MM-DD，供 datebar 高亮）
-//   agoSections  — 最近若干更早桶，每桶 TOP M，label 为 "4 hours ago" … "Yesterday"
-//   wwDates      — 所有 geo 日期并集（供 datebar 跳转更早日期）
+// Aggregate the WW homepage into 4h UTC buckets. Returns:
+//   latestItems  — TOP N of the latest bucket (homepage main list)
+//   latestTime   — max observed_at in the latest bucket, minute-precision, e.g. "2026-08-01 18:35"
+//   latestTimeIso— same value as ISO (for client-side timezone rewriting)
+//   latestDate   — local date of the latest bucket (YYYY-MM-DD, for datebar highlight)
+//   agoSections  — a few earlier buckets, each TOP M, labeled "4 hours ago" … "Yesterday"
+//   wwDates      — union of all geo dates (for datebar links to older dates)
 async function buildWwHomepage(byGeoDate, recentRows) {
   const rows = recentRows;
 
-  // 按 4h 桶分组（对齐 cron 0/4/8/12/16/20 UTC）
+  // Group into 4h buckets (aligned to cron 0/4/8/12/16/20 UTC)
   const byBucket = new Map();
   for (const r of rows) {
     const key = bucketKey(r.observed_at);
@@ -274,7 +276,7 @@ async function buildWwHomepage(byGeoDate, recentRows) {
   }
   const bucketKeys = [...byBucket.keys()].sort((a, b) => (a < b ? 1 : -1));
 
-  // 每个桶聚合 WW（跨 geo 按 keyword 去重，取 volume 最高）
+  // Aggregate WW per bucket (dedupe by keyword across geos, keep highest volume)
   const perBucket = bucketKeys.map((k) => {
     const raw = byBucket.get(k);
     const latestObs = raw.map((r) => r.observed_at).sort().pop();
@@ -287,7 +289,7 @@ async function buildWwHomepage(byGeoDate, recentRows) {
     : [];
   const latestTimeIso = latest?.latestObs ?? new Date().toISOString();
 
-  // 最近 6 个更早桶 → time-ago 区块（4h/8h/12h/16h/20h/24h ago，24h 标 Yesterday）
+  // Latest 6 earlier buckets → time-ago sections (4h/8h/12h/16h/20h/24h ago; 24h labeled "Yesterday")
   const agoSections = [];
   for (let off = 1; off <= 6; off += 1) {
     const b = perBucket[off];
@@ -295,7 +297,7 @@ async function buildWwHomepage(byGeoDate, recentRows) {
     const hours = off * 4;
     const label = hours >= 24 ? 'Yesterday' : `${hours} hours ago`;
     const items = b.items.slice(0, 100).map((it, i) => ({ ...it, rank: i + 1 }));
-    // latestObs = 该桶内最新 observed_at（ISO），供前端按访问时间计算 "X hours ago"
+    // latestObs = newest observed_at in the bucket (ISO), used by the client to compute "X hours ago"
     agoSections.push({ label, items, obsIso: b.latestObs });
   }
 
@@ -306,8 +308,9 @@ async function buildWwHomepage(byGeoDate, recentRows) {
   return { latestItems, latestTimeIso, agoSections, wwDates };
 }
 
-// 单个 4h 桶内跨 geo 聚合 WW：按 normalized keyword 去重（取 volume 最高），
-// 按搜索量降序取 TOP N。统一英文 summary（intro_en，回退 intro）。
+// Aggregate WW within a single 4h bucket across geos: dedupe by normalized keyword (keep
+// highest volume), sort by search volume desc, take TOP N. Use the English summary
+// (intro_en, falling back to intro).
 function aggregateWwBucket(rows, topN) {
   const byKey = new Map();
   for (const it of rows) {
@@ -325,9 +328,10 @@ function aggregateWwBucket(rows, topN) {
     .map((it) => ({ ...it, intro: it.intro_en || it.intro || null }));
 }
 
-// 单个 geo 的 4h 横排：latest + 6 time-ago 桶。
-// 与 WW 不同：不跨 geo 聚合，每桶就是该 geo 该 4h 窗口的快照（按 keyword 去重取最高 volume）。
-// intro 按渲染语言挑选（en → intro_en 回退 intro；否则 intro）。
+// 4h columns for a single geo: latest + 6 time-ago buckets.
+// Unlike WW: no cross-geo aggregation; each bucket is just that geo's snapshots in the 4h
+// window (deduped by keyword, highest volume kept).
+// Pick intro by render language (en → intro_en falling back to intro; otherwise intro).
 function buildGeoBucketsFromRows(rows, lang) {
   const byBucket = new Map();
   for (const r of rows) {
@@ -357,7 +361,7 @@ function buildGeoBucketsFromRows(rows, lang) {
   return { latestItems, latestTimeIso, agoSections };
 }
 
-// 单个 4h 桶内按 normalized keyword 去重（取 volume 最高），按搜索量降序。
+// Within a single 4h bucket, dedupe by normalized keyword (keep highest volume), sort by search volume desc.
 function dedupGeoBucket(rows) {
   const byKey = new Map();
   for (const it of rows) {
@@ -376,8 +380,8 @@ function pickIntro(it, lang) {
   return it.intro || null;
 }
 
-// observed_at(ISO) → 4h 对齐的桶键 "YYYY-MM-DD HH:00"（UTC）。
-// cron 在 0/4/8/12/16/20 UTC 触发，各 geo 的 observed_at 落在对应 4h 窗口内。
+// Map observed_at (ISO) to a 4h-aligned bucket key "YYYY-MM-DD HH:00" (UTC).
+// Cron runs at 0/4/8/12/16/20 UTC; each geo's observed_at falls inside its 4h window.
 function bucketKey(observedAtIso) {
   const d = new Date(observedAtIso);
   const h = d.getUTCHours();

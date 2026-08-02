@@ -1,16 +1,16 @@
 // Collect Google Trends Trending Now into D1 via the `google-trends-now` lib.
 //
-// 设计：
-//   * 每个 geo 每 4h 一次 fetch（谷歌最小粒度），产生一行 collection_runs
-//   * 每个 trend keyword 一行 trend_snapshots（不再按天 UPSERT 合并）
-//   * 前 N 个 trend 调 fetchTrendingNews(news_refs) 拿新闻 + gstatic 缩略图
-//   * 写 D1（wrangler），本地用 --local，CI 用 D1_REMOTE=1 走 --remote
-//   * 不用 SerpAPI / RSS，唯一数据源是 google-trends-now
+// Design:
+//   * Fetch each geo every 4h (Google's finest granularity), producing one collection_runs row.
+//   * One trend_snapshots row per trend keyword (no daily UPSERT merging).
+//   * For the top N trends, call fetchTrendingNews(news_refs) to get news + gstatic thumbnails.
+//   * Write to D1 via wrangler: --local locally, --remote in CI (D1_REMOTE=1).
+//   * No SerpAPI / RSS; google-trends-now is the sole data source.
 //
-// 用法:
-//   node collect-trends.js                          # 所有默认 geo, hours=4
+// Usage:
+//   node collect-trends.js                          # all default geos, hours=4
 //   node collect-trends.js --geos US,JP --hours 4
-//   node collect-trends.js --with-news 20           # 前 20 个 trend 解析新闻（默认 20）
+//   node collect-trends.js --with-news 20           # resolve news for top 20 trends (default 20)
 //   node collect-trends.js --limit 100 --delay-ms 1500
 //   node collect-trends.js --help
 
@@ -151,9 +151,9 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// 把 UTC 的 observed_at 换算成该 geo 本地日期（'YYYY-MM-DD'）。
-// 用本地日期作为「一天」的分组键，这样 US 的 7/29 = US 本地 7/29 全天，
-// 而不是 UTC 7/29（对美洲国家会跨两个本地日期）。
+// Convert the UTC observed_at to the geo's local date ('YYYY-MM-DD').
+// Use the local date as the "day" grouping key, so US 7/29 = the full US-local 7/29,
+// rather than UTC 7/29 (which would span two local days for the Americas).
 function localDate(observedAtUtc, tz) {
   try {
     return new Intl.DateTimeFormat('en-CA', {
@@ -167,13 +167,13 @@ function localDate(observedAtUtc, tz) {
 
 async function collectGeo(opts, geo) {
   const geoMeta = GEO_BY_CODE[geo];
-  // fetchGeo=null 表示该 geo 无法直接抓取（WW：google-trends-now 对 geo='' 返回 0 条），
-  // 由 build 期聚合其余 geo 得到，这里跳过。
+  // fetchGeo=null means this geo can't be fetched directly (WW: google-trends-now returns
+  // 0 rows for geo=''); it's aggregated from other geos at build time, so skip it here.
   if (geoMeta?.fetchGeo === null) {
     console.log(`${geo}: aggregated from other geos at build time, skipping fetch`);
     return { itemCount: 0, fetchStatus: 'skipped' };
   }
-  // 其余 geo：未显式配置 fetchGeo 时用 code 本身。
+  // Other geos: fall back to the code itself when fetchGeo isn't explicitly configured.
   const fetchGeo = geoMeta?.fetchGeo ?? geo;
   const result = await fetchTrendingNow({
     geo: fetchGeo,
@@ -183,7 +183,7 @@ async function collectGeo(opts, geo) {
     sort: opts.sort,
     limit: opts.limit,
     hl: opts.hl,
-    fallback: 'none', // 用户要求只用 google-trends-now，不走 RSS fallback
+    fallback: 'none', // Per request: only use google-trends-now, no RSS fallback.
     timeoutMs: opts.timeoutMs,
     retries: opts.retries,
     includeRaw: opts.includeRaw,
@@ -194,7 +194,7 @@ async function collectGeo(opts, geo) {
   const items = normalizeArray(result.items);
 
   if (result.fetch_status !== 'success' || items.length === 0) {
-    // 仍记录一次失败的 run，便于审计
+    // Still record a failed run for audit purposes.
     await executeBatch([{
       sql: `INSERT INTO collection_runs
               (observed_at, date, geo, hours, category, status_filter, sort,
@@ -210,7 +210,7 @@ async function collectGeo(opts, geo) {
     return { itemCount: 0, fetchStatus: result.fetch_status };
   }
 
-  // 1) 先写 collection_runs，拿回 run_id
+  // 1) Write collection_runs first and get back run_id.
   await executeBatch([{
     sql: `INSERT INTO collection_runs
             (observed_at, date, geo, hours, category, status_filter, sort,
@@ -228,7 +228,7 @@ async function collectGeo(opts, geo) {
   const runId = runRows[0]?.id;
   if (!runId) throw new Error(`Could not retrieve run_id for geo=${geo} observed_at=${observedAt}`);
 
-  // 2) 给前 withNews 个 trend 解析新闻 + gstatic 图
+  // 2) Resolve news + gstatic thumbnail for the top withNews trends.
   const withNewsCount = Math.min(opts.withNews, items.length);
   const newsByPosition = new Map();
   for (let i = 0; i < withNewsCount; i += 1) {
@@ -246,13 +246,13 @@ async function collectGeo(opts, geo) {
     if (i < withNewsCount - 1 && opts.delayMs > 0) await sleep(Math.min(opts.delayMs, 800));
   }
 
-  // 3) 拼 trend_snapshots 批量 INSERT
+  // 3) Build the trend_snapshots batch INSERT.
   const stmts = items.map((item, idx) => {
     const breakdown = normalizeArray(item.trend_breakdown);
     const categories = normalizeArray(item.categories);
     const articles = newsByPosition.get(idx);
     const news = articles ? dedupeNews(mapNewsArticles(articles)) : [];
-    // 趋势主图：取第一篇新闻的 gstatic 缩略图
+    // Trend thumbnail: take the gstatic thumbnail from the first news item that has one.
     const picture = news.find((n) => n.picture)?.picture || null;
 
     const volLabel = item.search_volume_label ?? (item.search_volume != null ? String(item.search_volume) : null);

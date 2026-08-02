@@ -1,16 +1,17 @@
-// D1 薄适配层。
+// Thin D1 adapter layer.
 //
-// 目标：让 ingest / query / build 脚本用同一组 SQL，
-// 既能在本地通过 `wrangler d1 execute --local` 跑，
-// 也能在 CI 里通过 `--remote` 跑（连真实 Cloudflare D1）。
+// Goal: let the ingest / query / build scripts share one set of SQL that runs both
+// locally via `wrangler d1 execute --local` and in CI via `--remote` (against the
+// real Cloudflare D1).
 //
-// 切换：环境变量 D1_REMOTE=1 时使用 --remote，否则 --local。
-// CI 还需要设置:
+// Switching: D1_REMOTE=1 uses --remote; otherwise --local.
+// CI also requires:
 //   CLOUDFLARE_API_TOKEN  (D1:Edit + Pages:Edit)
 //   CLOUDFLARE_ACCOUNT_ID
 //
-// 本地实现：调用 wrangler CLI 子进程，--json 输出。
-// 性能说明：wrangler CLI 每次启动约 1-2s。我们用 batch 把多条 statement 拼在一次调用里。
+// Implementation: shells out to the wrangler CLI with --json output.
+// Performance note: each wrangler CLI startup takes ~1-2s, so we batch multiple
+// statements into a single call.
 
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
@@ -21,11 +22,11 @@ import { randomUUID } from 'node:crypto';
 const REMOTE = process.env.D1_REMOTE === '1';
 const SCOPE = REMOTE ? '--remote' : '--local';
 
-// D1 偶发的瞬态错误，重试即可恢复。
-// "Not currently importing anything" 是 wrangler --file 的已知问题：
-// 上一次 import 的状态没清理干净，D1 认为没有 import 在进行中。
-// "Input file ... missing or invalid" 同属 import 状态卡死。
-// 详见 https://community.cloudflare.com/t/wrangler-import-error-not-currently-importing-anything/755655
+// Intermittent D1 transient errors that recover on retry.
+// "Not currently importing anything" is a known wrangler --file issue: the previous
+// import's state wasn't cleaned up, so D1 thinks no import is in progress.
+// "Input file ... missing or invalid" is the same import-state-stuck problem.
+// See https://community.cloudflare.com/t/wrangler-import-error-not-currently-importing-anything/755655
 const TRANSIENT_ERROR_PATTERNS = [
   'Not currently importing anything',
   'D1 DB is overloaded',
@@ -46,7 +47,7 @@ function sleep(ms) {
 }
 
 /**
- * 执行一条只读 SQL 并返回行数组。
+ * Run a read-only SQL statement and return the rows.
  */
 export async function queryAll(sql, params = []) {
   const out = await runWrangler([
@@ -58,7 +59,7 @@ export async function queryAll(sql, params = []) {
 }
 
 /**
- * 批量执行多条写语句，在单次 wrangler 调用里用 --file。
+ * Batch-execute multiple write statements via --file in a single wrangler call.
  */
 export async function executeBatch(statements) {
   if (!statements.length) return;
@@ -74,7 +75,7 @@ export async function executeBatch(statements) {
   }
 }
 
-/** 对初始化/迁移用的 schema 文件。 */
+/** Apply a schema file for initialization/migration. */
 export async function applySchemaFile(filepath) {
   await runWrangler(['d1', 'execute', 'trendigger-db', SCOPE, '--file', filepath]);
 }
@@ -85,7 +86,7 @@ export async function ensureLocalDir() {
 
 // ---------------------------------------------------------------------------
 
-// 带重试的 wrangler 调用：对 D1 瞬态错误做指数退避重试。
+// Wrangler call with retry: exponential backoff for D1 transient errors.
 async function runWrangler(args) {
   let lastErr;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
@@ -126,10 +127,11 @@ function runWranglerOnce(args) {
         return reject(err);
       }
       if (!args.includes('--json')) {
-        // 非 JSON 命令（如 --file 执行 schema）无需返回数据
+        // Non-JSON commands (e.g. --file schema execution) return no data.
         return resolve(null);
       }
-      // wrangler 偶尔在 JSON 前后夹杂日志行；抽取第一个 JSON 数组/对象。
+      // wrangler occasionally interleaves log lines before/after the JSON; extract the
+      // first JSON array/object.
       const json = extractJson(stdout);
       if (!json) {
         return reject(new Error(`Failed to parse wrangler JSON output:\n${stdout}`));
@@ -140,7 +142,7 @@ function runWranglerOnce(args) {
 }
 
 function extractJson(text) {
-  // 找到第一个 '[' 或 '{' 到匹配的 ']'/'}' 的子串
+  // Find the substring from the first '[' or '{' to its matching ']'/'}'.
   const start = Math.min(
     ...['[', '{']
       .map((c) => text.indexOf(c))
@@ -156,9 +158,10 @@ function extractJson(text) {
 }
 
 // ---------------------------------------------------------------------------
-// SQL 参数绑定：wrangler CLI 的 --command 不支持 ? 占位符的类型化绑定，
-// 我们手动做安全插值。只支持 string / number / null。
-// 安全性：只接受基础类型；字符串按 SQLite 文本转义（'' 双写）。
+// SQL parameter binding: wrangler CLI's --command doesn't support typed ? placeholders,
+// so we do safe interpolation manually. Only string / number / null are supported.
+// Safety: only primitive types are accepted; strings are escaped per SQLite text rules
+// ('' doubled).
 export function bind(sql, params) {
   if (!params.length) return sql;
   let i = 0;
