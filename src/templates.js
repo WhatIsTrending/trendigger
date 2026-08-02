@@ -217,7 +217,7 @@ ${alternateTags}
     <button class="sidebar-close" id="sidebarClose" aria-label="Close menu">&times;</button>
   </div>
   <div class="sidebar-intro">
-    Historical Google Trends with AI summaries for Worldwide + ${GEOS.length - 1} countries — updated every 4h.
+    Real-time Google Trends with AI summaries for Worldwide + ${GEOS.length - 1} countries — updated every 4h.
   </div>
   <nav class="sidebar-nav">
     <a href="${assetsPrefix}index.html">Home</a>
