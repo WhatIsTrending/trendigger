@@ -114,26 +114,31 @@ function buildPrompt({ keyword, geo, geoName, lang, news = [] }) {
         .join('\n')
     : '  (no related news headlines available)';
 
+  // 写法要点：
+  // - 基于 news headlines 描述具体事件，不分析"为什么热"（AI 分析增长原因容易套话）
+  // - headlines 是事实来源，禁止"details are limited"套话
+  // - 模型知识只用于"keyword 是什么"，当前状态以 news 为准
   return `You are writing a brief background summary for a trending search term.
 
 TERM: "${keyword}"
 REGION: ${region}
 WRITE IN: ${langLabel}
 
-RECENT NEWS HEADLINES about this term (use them as clues for "why is this trending right now"):
+RECENT NEWS HEADLINES about this term:
 ${newsBlock}
 
 TASK:
 Write a concise 3-4 sentence summary IN ${langLabel}. The summary should:
-  1. Briefly say what/who "${keyword}" is (1 sentence).
-  2. Explain briefly why it is trending *right now*, based on the headlines above (1-2 sentences).
-  3. Add one sentence of relevant context or background a reader would find useful.
+  1. Briefly say what/who "${keyword}" is (1 sentence, using general knowledge).
+  2. Describe the SPECIFIC recent event happening now, based on the headlines above (1-2 sentences). Include concrete details from the headlines — names of teams, people, scores, outcomes, or what the news is actually about.
+  3. Add one sentence of relevant context.
 
 RULES:
 - Output ONLY valid JSON: {"intro": "..."}.
 - Write natural, reader-friendly prose. No lists, no markdown, no quotes around the term.
-- If the headlines are inconclusive or missing, say so gracefully (e.g., "Details about the current spike are limited.") instead of inventing specifics.
-- Do not cite sources or URLs. Do not repeat the news headlines verbatim.
+- The headlines above ARE the facts. Never write "details are limited" or "the reason is unclear" — instead, describe what the headlines say. If they mention a match, a result, a person, an announcement, say so specifically.
+- Do not rely on outdated knowledge about the subject's current club/team/status if the headlines indicate otherwise.
+- Do not cite sources or URLs. Do not repeat headlines verbatim — rephrase into flowing prose.
 - Keep total length under 120 words.`;
 }
 
