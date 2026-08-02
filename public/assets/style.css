@@ -257,6 +257,10 @@ h1.page-title .flag { font-size: 28px; }
 /* tab 面板：hidden 时完全不占空间 */
 .tab-panel[hidden] { display: none; }
 
+/* 首页桶堆叠：锚点跳转时预留 sticky header 空间，平滑滚动 */
+html { scroll-behavior: smooth; }
+section.bucket { scroll-margin-top: 80px; }
+
 /* Show more button */
 .btn-show-more {
   display: block;

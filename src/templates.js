@@ -343,19 +343,14 @@ ${bodyHtml}
   document.addEventListener('click', function(e){ if(!picker.contains(e.target)) toggle(false); });
   document.addEventListener('keydown', function(e){ if(e.key==='Escape') toggle(false); });
 })();
-// 首页 time-ago tab 切换：点 tab 只显示对应桶的 keyword 列表
+// 首页 time-tabs 锚点导航：点击高亮当前 tab（平滑滚动由 CSS scroll-behavior 处理）
 (function(){
   var tabs = document.querySelectorAll('.time-tab');
   if(!tabs.length) return;
-  var panels = document.querySelectorAll('.tab-panel');
   tabs.forEach(function(tab){
     tab.addEventListener('click', function(){
-      var idx = tab.getAttribute('data-tab');
       tabs.forEach(function(t){ t.classList.remove('active'); });
-      panels.forEach(function(p){ p.hidden = true; p.classList.remove('active'); });
       tab.classList.add('active');
-      var panel = document.querySelector('.tab-panel[data-panel="'+idx+'"]');
-      if(panel){ panel.hidden = false; panel.classList.add('active'); }
     });
   });
 })();
@@ -812,29 +807,31 @@ export function homePage({ items, availableDates = [], geoCode = 'WW', latestTim
   // WW 永远是英文 summary 视图
   const renderLang = 'en';
 
-  // 所有时间桶：最新 + 更早的 time-ago 区块，用 tab 切换只显示一个（竖排单列）
+  // 所有时间桶：最新 + 更早的 time-ago 区块，全部竖排堆叠在同一页面（不切换隐藏）
   const buckets = [
     { label: 'Latest', obsIso: latestTimeIso, items },
     ...sections.map((s) => ({ label: s.label, obsIso: s.obsIso, items: s.items })),
   ];
 
-  // tab 栏：横向可滚动，每个 tab 带 data-obs-iso 供前端重写为相对时间
+  // time-tabs 作为锚点导航：横向可滚动，点击平滑滚动到对应桶
   const tabsHtml = buckets.map((b, i) => {
     const obsAttr = b.obsIso ? ` data-obs-iso="${escAttr(b.obsIso)}"` : '';
-    return `<button class="time-tab${i === 0 ? ' active' : ''}" type="button" data-tab="${i}"${obsAttr}>${escape(b.label)}</button>`;
+    return `<a class="time-tab${i === 0 ? ' active' : ''}" href="#bucket-${i}"${obsAttr}>${escape(b.label)}</a>`;
   }).join('');
 
-  // tab 面板：每个桶一个 panel，默认只显示第一个；单列竖排，card 高度由内容决定
-  const panelsHtml = buckets.map((b, i) => {
+  // 所有桶竖排堆叠：每个桶一个 section + 标题（动态相对时间）+ 单列 keyword 列表
+  const sectionsHtml = buckets.map((b, i) => {
     const cards = b.items
       .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang }))
       .join('\n');
-    return `<section class="tab-panel${i === 0 ? ' active' : ''}" data-panel="${i}"${i > 0 ? ' hidden' : ''}>
-    <div class="trend-grid trend-grid--single">${cards || '<p>No data for this time slot.</p>'}</div>
-  </section>`;
+    const obsAttr = b.obsIso ? ` data-obs-iso="${escAttr(b.obsIso)}"` : '';
+    return `<section class="bucket" id="bucket-${i}">
+  <h2 class="section-title"${obsAttr}>${escape(b.label)}</h2>
+  <div class="trend-grid trend-grid--single">${cards || '<p>No data for this time slot.</p>'}</div>
+</section>`;
   }).join('');
 
-  // 更早日期导航放在 time-tabs 之后：日期 pills + datepicker，无 "Latest" pill
+  // 更早日期导航放在所有桶之后：日期 pills + datepicker
   const olderDateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
 
   const titleFlag = flagHtml(geoCode, geoMeta.name);
@@ -847,8 +844,8 @@ export function homePage({ items, availableDates = [], geoCode = 'WW', latestTim
     Top ${items.length} trending searches by volume · updated every 4h.
   </p>
   <nav class="region-bar" aria-label="Switch region">${regionBar(geoCode, '')}</nav>
-  <nav class="time-tabs" role="tablist">${tabsHtml}</nav>
-  ${panelsHtml}
+  <nav class="time-tabs" role="navigation">${tabsHtml}</nav>
+  ${sectionsHtml}
   ${olderDateNav}`;
 
   return layout({
