@@ -20,6 +20,7 @@ public/**
 !public/assets/
 !public/assets/**
 !public/robots.txt
+!public/ads.txt
 .wrangler/
 cloudflare-token
 local_db
