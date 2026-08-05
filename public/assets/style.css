@@ -148,6 +148,16 @@ h1.page-title .flag { font-size: 28px; }
   margin: 0 0 20px;
 }
 
+/* Indexable prose paragraph (SEO lede under the title) */
+.seo-lede {
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 760px;
+  margin: 0 0 18px;
+}
+.seo-lede a { color: var(--link); }
+
 /* Date nav bar */
 .datebar {
   display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
@@ -213,28 +223,41 @@ h1.page-title .flag { font-size: 28px; }
 /* tab 面板：hidden 时完全不占空间 */
 .tab-panel[hidden] { display: none; }
 
-/* 首页时间桶横向并排：每个 4h 桶一列，并排可横向滚动对比 */
+/* 首页时间桶单列竖排：每个 4h 时间段占一整列，按时间顺序上下堆叠 */
 html { scroll-behavior: smooth; }
 section.bucket { scroll-margin-top: 80px; }
-.time-columns {
+.bucket-pairs {
   display: flex;
-  gap: 1rem;
-  align-items: flex-start;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  padding-bottom: 1rem;
+  flex-direction: column;
+  gap: 4px;
 }
-.time-columns .bucket {
-  flex: 0 0 300px;
-  min-width: 300px;
+/* 本页时间段锚点跳转按钮：贴在日期导航下方，横排可换行 */
+.bucket-anchors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 20px;
 }
-/* 视口外卡片（含横向滚走的列）跳过 layout/paint，大幅降低首屏渲染成本 */
-.time-columns .card {
+.bucket-anchor {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.bucket-anchor:hover {
+  color: var(--text);
+  border-color: var(--accent, var(--border));
+  background: var(--surface-hover, var(--surface));
+}
+/* 视口外卡片跳过 layout/paint，降低长列表首屏渲染成本 */
+.bucket-pairs .card {
   content-visibility: auto;
   contain-intrinsic-size: auto 200px;
-}
-@media (max-width: 560px) {
-  .time-columns .bucket { flex-basis: 86vw; min-width: 86vw; }
 }
 
 /* Show more button */

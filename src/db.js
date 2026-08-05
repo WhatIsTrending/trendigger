@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 
 const REMOTE = process.env.D1_REMOTE === '1';
 const SCOPE = REMOTE ? '--remote' : '--local';
+const USE_MOCK = process.env.MOCK === '1';
 
 // Intermittent D1 transient errors that recover on retry.
 // "Not currently importing anything" is a known wrangler --file issue: the previous
@@ -50,6 +51,9 @@ function sleep(ms) {
  * Run a read-only SQL statement and return the rows.
  */
 export async function queryAll(sql, params = []) {
+  if (USE_MOCK) {
+    return mockQueryAll(sql, params);
+  }
   const out = await runWrangler([
     'd1', 'execute', 'trendigger-db', SCOPE, '--json',
     '--command', bind(sql, params),
@@ -181,4 +185,84 @@ function toSqlLiteral(v) {
   if (typeof v === 'boolean') return v ? '1' : '0';
   if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`;
   throw new Error(`Unsupported SQL param type: ${typeof v}`);
+}
+
+// ---------------------------------------------------------------------------
+// Local mock data (MOCK=1): lets `npm run build` run without Cloudflare D1.
+// Generates a small but representative dataset so the templates (SEO text,
+// JSON-LD, tiered lazy-load, calendars, etc.) can be verified locally.
+const MOCK_GEOS = ['US', 'BR', 'JP', 'GB', 'IN', 'DE', 'FR', 'WW'];
+const MOCK_REAL_GEOS = MOCK_GEOS.filter((g) => g !== 'WW');
+const MOCK_DATE = new Date().toISOString().slice(0, 10); // today
+const MOCK_OLD_DATES = (() => {
+  const out = [];
+  for (let d = 1; d <= 6; d += 1) {
+    const dt = new Date(Date.now() - d * 24 * 3600 * 1000);
+    out.push(dt.toISOString().slice(0, 10));
+  }
+  return out;
+})();
+
+const MOCK_KEYWORDS = [
+  'World Cup', 'Taylor Swift', 'Bitcoin', 'iPhone 17', 'Election results',
+  'Olympics', 'ChatGPT', 'Weather alert', 'Stock market', 'NBA finals',
+  'Diwali', 'Black Friday', 'Netflix top 10', 'Covid update', 'Space launch',
+  'Premier League', 'Crypto crash', 'New movie', 'Earthquake', 'Formula 1',
+  'Eurovision', 'Thanksgiving', 'Boxing match', 'AI tools', 'Travel deals',
+  'Vaccine news', 'Celebrity scandal', 'Video game release', 'Gold price', 'Lottery result',
+];
+
+function mockRow(geo, date, keyword, idx) {
+  const vol = 100 - idx * 2; // descending volume
+  const startedAt = Math.floor(Date.now() / 1000) - idx * 3600;
+  return {
+    date,
+    geo,
+    keyword,
+    search_volume_num: vol,
+    search_volume_raw: vol > 80 ? '100' : vol > 50 ? '50' : '10',
+    started_at: startedAt,
+    picture: `https://placehold.co/120x120?text=${encodeURIComponent(keyword)}`,
+    news_json: JSON.stringify([
+      { title: `${keyword} makes headlines in ${geo}`, url: 'https://example.com/news', source: 'Example News' },
+    ]),
+    trend_breakdown_json: null,
+    explore_url: `https://trends.google.com/trends/explore?q=${encodeURIComponent(keyword)}`,
+    intro: `${keyword} has been trending in ${geo} as people search for the latest updates, news and discussions around the topic.`,
+    intro_en: `${keyword} is trending worldwide as people look for the latest news, explanations and discussions.`,
+  };
+}
+
+function mockQueryAll(sql) {
+  // PEAK_SNAPSHOT_SQL → one representative (peak) row per (geo, date, keyword).
+  if (sql.includes('ROW_NUMBER() OVER')) {
+    const rows = [];
+    const dates = [MOCK_DATE, ...MOCK_OLD_DATES];
+    for (const geo of MOCK_GEOS) {
+      for (const date of dates) {
+        MOCK_KEYWORDS.forEach((kw, i) => {
+          rows.push(mockRow(geo, date, kw, i));
+        });
+      }
+    }
+    return rows;
+  }
+  // RECENT_BUCKETS_SQL → last-24h snapshots across geos, 6 four-hour buckets.
+  if (sql.includes('observed_at')) {
+    const rows = [];
+    const BUCKETS = 6;
+    for (const geo of MOCK_REAL_GEOS) {
+      for (let p = 0; p < BUCKETS; p += 1) {
+        MOCK_KEYWORDS.slice(0, 25).forEach((kw, i) => {
+          const r = mockRow(geo, MOCK_DATE, kw, (i + p) % 30);
+          // vary volume a bit across buckets so peak-aggregation is meaningful
+          r.search_volume_num = r.search_volume_num - p;
+          r.observed_at = new Date(Date.now() - p * 4 * 3600 * 1000).toISOString();
+          rows.push(r);
+        });
+      }
+    }
+    return rows;
+  }
+  return [];
 }

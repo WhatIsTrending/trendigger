@@ -144,19 +144,20 @@ for (const r of recentRows) {
 console.log(`Loaded ${recentRows.length} recent (48h) snapshot rows for hours-columns.`);
 
 // 2. Home page — Worldwide, aggregated to a single "last 24 hours" view ------
-// WW cannot be scraped directly. Aggregate the last 24h of snapshots across all geos:
-// dedupe by keyword (highest volume wins) and keep the peak value per keyword.
+// WW cannot be scraped directly. Aggregate the last 24h of snapshots across all geos
+// into 4-hour time buckets (dedupe by keyword, peak volume wins per bucket).
 const wwHome = await buildWwHomepage(byGeoDate, recentRows);
+const wwBuckets = buildBuckets(recentRows, 'en');
 await maybeWrite(
   join(OUT, 'index.html'),
   homePage({
-    items: wwHome.latestItems,
     geoCode: 'WW',
+    buckets: wwBuckets,
     availableDates: wwHome.wwDates,
   }),
 );
 console.log(
-  `  WW: ${wwHome.latestItems.length} latest-day topics, ${wwHome.wwDates.length} historical dates`,
+  `  WW: ${wwBuckets.reduce((n, b) => n + b.items.length, 0)} latest topics across ${wwBuckets.length} buckets, ${wwHome.wwDates.length} historical dates`,
 );
 
 // 2b. Static content pages
@@ -193,8 +194,8 @@ for (const g of GEOS) {
       // geo/WW/index.html and generate the historical date pages below.
       if (isLatest) {
         html = homePage({
-          items: wwHome.latestItems,
           geoCode: 'WW',
+          buckets: wwBuckets,
           availableDates: wwHome.wwDates,
         });
         await maybeWrite(join(OUT, 'geo', 'WW', 'index.html'), html);
@@ -206,13 +207,13 @@ for (const g of GEOS) {
     }
 
     if (isLatest) {
-      // Latest geo page: aggregate the last 24h into a single day view (peak per
-      // keyword), ranked by search volume. Falls back to the per-day peak column
-      // when no 24h snapshot data is available.
-      const dayItems = aggregateDayGeo(recentByGeo.get(g.code) || [], g.lang);
-      const latestTrends = dayItems.length > 0 ? dayItems : trends;
+      // Latest geo page: build 4-hour time buckets from the last 24h snapshots.
+      // Falls back to the per-day peak column when no 24h snapshot data exists.
+      const buckets = buildBuckets(recentByGeo.get(g.code) || [], g.lang);
+      const latestTrends = buckets.length > 0 ? buckets.flatMap((b) => b.items) : trends;
       html = geoPage({
         geoMeta: g, date, isLatest: true,
+        buckets,
         trends: latestTrends,
         availableDates: dates,
         lang: g.lang,
@@ -316,6 +317,40 @@ function aggregateDayGeo(rows, lang) {
     .sort((a, b) => vol(b) - vol(a))
     .slice(0, 100)
     .map((it) => ({ ...it, intro: pickIntro(it, lang) }));
+}
+
+// Build 4-hour time buckets from raw 24h snapshots for the "latest" page.
+// Each bucket keeps the peak-volume row per keyword, ranked by search volume.
+// Returns buckets newest-first, e.g.
+//   [{ label: '1 hour ago', items: [...] }, { label: '5 hours ago', items: [...] }, ...]
+// covering the last 24 hours (≈6 buckets). Used for the dual-column layout.
+function buildBuckets(rows, lang) {
+  const BUCKET_MS = 4 * 3600 * 1000;
+  const now = Date.now();
+  const byBucket = new Map();
+  for (const it of rows) {
+    const ts = it.observed_at ? Date.parse(it.observed_at) : 0;
+    if (!ts) continue;
+    const key = Math.floor(ts / BUCKET_MS);
+    if (!byBucket.has(key)) byBucket.set(key, new Map());
+    const m = byBucket.get(key);
+    const nk = normKeyword(it.keyword);
+    if (!nk) continue;
+    const prev = m.get(nk);
+    if (!prev || vol(it) > vol(prev)) m.set(nk, it);
+  }
+  const keys = [...byBucket.keys()].sort((a, b) => b - a); // newest bucket first
+  const lastBucketKey = keys.length ? Math.floor(now / BUCKET_MS) : 0;
+  return keys.map((bk) => {
+    const items = [...byBucket.get(bk).values()]
+      .sort((a, b) => vol(b) - vol(a))
+      .slice(0, 100)
+      .map((it, i) => ({ ...it, rank: i + 1, intro: pickIntro(it, lang) }));
+    // Label = relative hours ago, aligned to 4h collection cadence (1, 5, 9, 13, ...).
+    const idx = Math.max(0, lastBucketKey - bk);
+    const hoursAgo = idx * 4 + 1;
+    return { label: `${hoursAgo} hour${hoursAgo === 1 ? '' : 's'} ago`, items };
+  });
 }
 
 function normKeyword(k) {

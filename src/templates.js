@@ -164,14 +164,33 @@ function buildLangSwitch(geoMeta, lang, basePath) {
  * @param {string} [o.canonicalPath] - path for <link rel="canonical"> (no domain, may include ?lang=en)
  * @param {{hreflang:string,path:string}[]} [o.alternates] - hreflang alternate language versions
  */
-export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canonicalPath, alternates = [] }) {
+export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canonicalPath, alternates = [], description, jsonLd } ) {
   const dir = RTL_LANGS.has(lang.split('-')[0]) ? 'rtl' : 'ltr';
-  const canonicalTag = canonicalPath
-    ? `<link rel="canonical" href="${escAttr(SITE_BASE + canonicalPath)}">`
-    : '';
+  const canonicalUrl = canonicalPath ? SITE_BASE + canonicalPath : SITE_BASE + '/';
+  const canonicalTag = `<link rel="canonical" href="${escAttr(canonicalUrl)}">`;
   const alternateTags = alternates
     .map((a) => `<link rel="alternate" hreflang="${escAttr(a.hreflang)}" href="${escAttr(SITE_BASE + a.path)}">`)
     .join('\n');
+  // Dynamic meta description: falls back to a generic, keyword-rich default.
+  const desc = description
+    ? escape(description)
+    : escape(`Discover the top Google Trends ${GEOS.length - 1}+ countries and Worldwide. See what's trending on Google right now with AI-written summaries.`);
+  // Open Graph + Twitter Card (sharing + social-indexing signals)
+  const ogTags = `
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Trendigger">
+<meta property="og:title" content="${escAttr(title)}">
+<meta property="og:description" content="${desc}">
+<meta property="og:url" content="${escAttr(canonicalUrl)}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${escAttr(title)}">
+<meta name="twitter:description" content="${desc}">`;
+  // Structured data (JSON-LD) for rich results; injected as a <script> in <head>.
+  // `jsonLd` may contain multiple top-level nodes joined by newlines; wrap them
+  // in a JSON array so the block stays valid JSON.
+  const jsonLdTag = jsonLd
+    ? `<script type="application/ld+json">[${jsonLd}]</script>`
+    : '';
   // Infer current geo from canonicalPath so the header region picker shows it
   const currentGeo = (() => {
     const m = (canonicalPath || '').match(/^\/geo\/([A-Z]{2})\//);
@@ -193,12 +212,14 @@ export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canoni
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escape(title)} · Trendigger</title>
-<meta name="description" content="Historical Google Trends with AI-written summaries for ${GEOS.length - 1}+ countries.">
+<meta name="description" content="${desc}">
+${ogTags}
 <meta name="google-adsense-account" content="ca-pub-4233507772773094">
 <link rel="stylesheet" href="${assetsPrefix}assets/style.css">
 <link rel="stylesheet" href="${assetsPrefix}assets/flag-icons/css/flag-icons.min.css">
 ${canonicalTag}
 ${alternateTags}
+${jsonLdTag}
 <!-- Google tag (gtag.js) -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-Q4V02GPE7D"></script>
 <script>
@@ -490,7 +511,7 @@ function safeJson(s, fb) { try { return JSON.parse(s); } catch { return fb; } }
  * @param {string[]} o.availableDates - for nav (most recent first)
  * @param {string} [o.lang]    - render language ('en' or geoMeta.lang)
  */
-export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang }) {
+export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang, buckets = [] }) {
   const assetsPrefix = '../../';
   const flag = flagHtml(geoMeta.code, geoMeta.name);
   const renderLang = lang || geoMeta.lang;
@@ -507,20 +528,57 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang 
   const dateNav = buildDateNav(availableDates, date, isLatest, '', renderLang);
   const showGeoFlag = geoMeta.code === 'WW';
 
-  // Both latest ("last 24 hours", already aggregated to a single day) and
-  // historical date pages render a single column of trend cards, progressively
-  // revealed in tiers (first 20, then 21-50, then 51-100) for fast initial load.
-  const listHtml = renderTieredGrid(trends, {
-    geoCode: geoMeta.code,
-    assetsPrefix,
-    showGeoFlag,
-    lang: renderLang,
-  });
+  // Latest page ("last 24 hours"): single-column 4h buckets. Historical date
+  // pages: a single column (unified top 100). Both progressively reveal tiers.
+  const listHtml = isLatest && buckets.length
+    ? renderBucketPairs(buckets, {
+        geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang,
+      })
+    : renderTieredGrid(trends, {
+        geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang,
+      });
+
+  // In-page "x hours ago" jump pills (only on the last-24h view).
+  const bucketAnchors = isLatest ? buildBucketAnchors(buckets) : '';
 
   // SEO-friendly title + subtitle. Latest = "for last 24 hours"; historical = "for YYYY-MM-DD".
   const titleDate = isLatest ? 'last 24 hours' : date;
   const h1 = `${geoMeta.name} Google Trends for ${titleDate}`;
-  const sub = `Top ${roundTopN(trends.length)} searches`;
+  const bucketItems = isLatest && buckets.length ? buckets.flatMap((b) => b.items) : [];
+  const sub = `Top ${roundTopN(isLatest ? bucketItems.length : trends.length)} searches`;
+
+  // SEO description: keyword-rich, mirrors real search intent
+  // ("google trends [country]", "trending now", "top searches today").
+  const desc = isLatest
+    ? `See the top Google Trends in ${geoMeta.name} right now. Discover what's trending on Google today in ${geoMeta.name} — ${roundTopN(bucketItems.length)} trending searches with AI-written summaries.`
+    : `Google Trends in ${geoMeta.name} for ${date}. Explore the ${roundTopN(trends.length)} top trending searches of the day and what people searched for on Google.`;
+
+  // Indexable prose paragraph intentionally omitted to keep geo pages lean.
+  const prose = '';
+
+  // JSON-LD: ItemList of trending keywords (rich-result eligible) + BreadcrumbList.
+  // Latest page lists the union of bucket items; historical page lists the day's trends.
+  const seoItems = isLatest && bucketItems.length ? bucketItems : trends;
+  const itemListJson = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    name: h1,
+    itemListElement: seoItems.slice(0, 100).map((t, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: t.keyword,
+      url: `${SITE_BASE}/geo/${geoMeta.code}/${keywordHref(t.keyword)}${enVariant ? '?lang=en' : ''}`,
+    })),
+  });
+  const crumbJson = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: `${SITE_BASE}/` },
+      { '@type': 'ListItem', position: 2, name: `${geoMeta.name} Google Trends`, item: `${SITE_BASE}/geo/${geoMeta.code}/` },
+    ],
+  });
+  const jsonLd = itemListJson + ',' + crumbJson;
 
   const body = `
   <h1 class="page-title">
@@ -528,8 +586,10 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang 
     <span>${escape(h1)}</span>
   </h1>
   <p class="page-sub">${escape(sub)}</p>
+  ${prose}
   ${langSwitch}
   ${dateNav}
+  ${bucketAnchors}
   ${listHtml}`;
 
   return layout({
@@ -539,6 +599,8 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang 
     bodyHtml: body,
     canonicalPath,
     alternates,
+    description: desc,
+    jsonLd,
   });
 }
 
@@ -793,6 +855,7 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
   ${shareButtonsHtml}
 
   ${intro ? `<div class="detail-intro"><p>${escape(intro)}</p></div>` : ''}
+  <p class="seo-lede">Why is <strong>${escape(keyword)}</strong> trending on Google? This page tracks <em>${escape(keyword)}</em> in ${escape(geoMeta.name)} — its peak search volume, how many days it has been trending, and the latest related news. Use the timeline above to see when ${escape(keyword)} spiked on Google Trends.</p>
   ${countriesRow}
 
   <div class="stats">
@@ -809,6 +872,33 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
   <h2 class="section-title">Latest related news (${escape(lastDate ?? '')})</h2>
   ${newsHtml}`;
 
+  // SEO description for the keyword page (keyword-rich, mirrors search intent).
+  const desc = intro
+    ? `${escape(keyword)} is trending on Google in ${geoMeta.name}. ${intro.split('.')[0]}. See its peak search volume, how long it's been trending, and the latest news.`
+    : `Why is ${escape(keyword)} trending on Google in ${geoMeta.name}? See its peak search volume, ${history.length} days trending, and the latest related news.`;
+
+  // JSON-LD: Article (rich-result eligible) + BreadcrumbList.
+  const articleJson = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline: `${keyword} — Google Trends in ${geoMeta.name}`,
+    description: desc,
+    ...(intro ? { articleBody: intro } : {}),
+    datePublished: firstDate ? `${firstDate}T00:00:00Z` : undefined,
+    dateModified: lastDate ? `${lastDate}T00:00:00Z` : undefined,
+    mainEntityOfPage: { '@type': 'WebPage', '@id': canonicalUrl },
+  });
+  const crumbJson = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: `${SITE_BASE}/` },
+      { '@type': 'ListItem', position: 2, name: `${geoMeta.name} Google Trends`, item: `${SITE_BASE}/geo/${geoMeta.code}/` },
+      { '@type': 'ListItem', position: 3, name: keyword, item: canonicalUrl },
+    ],
+  });
+  const jsonLd = articleJson + ',' + crumbJson;
+
   return layout({
     title: `${keyword} · ${geoMeta.name}`,
     lang: renderLang,
@@ -816,6 +906,8 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
     bodyHtml: body,
     canonicalPath,
     alternates,
+    description: desc,
+    jsonLd,
   });
 }
 
@@ -830,46 +922,98 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
  * @param {string} [o.latestTimeIso] - ISO form of the latest bucket's observed_at (for client-side relative time)
  * @param {{label:string, items:object[], obsIso?:string}[]} [o.sections] - earlier time-ago sections
  */
-// Render horizontal time-columns: latest + time-ago buckets, one column each.
-// Shared by homePage (WW) and geoPage (regional latest) to keep column structure consistent.
-function renderTimeColumns(buckets, { geoCode, assetsPrefix, showGeoFlag, lang }) {
-  return buckets.map((b, i) => {
-    const cards = b.items
-      .map((t) => trendCard({ trend: t, geoCode: t.geo || geoCode, assetsPrefix, showGeoFlag, lang }))
-      .join('\n');
-    const obsAttr = b.obsIso ? ` data-obs-iso="${escAttr(b.obsIso)}"` : '';
-    return `<section class="bucket time-column" id="bucket-${i}">
-  <h2 class="section-title"${obsAttr}>${escape(b.label)}</h2>
-  <div class="trend-grid trend-grid--single">${cards || '<p>No data for this time slot.</p>'}</div>
-</section>`;
-  }).join('');
+// Render 4-hour time buckets as a single vertical column: one time slot per
+// column, newest-first (1h ago, then 5h ago, 9h ago, ... up to the last 24h).
+// Each bucket's cards are progressively revealed (20 → 50 → 100) with
+// lazy-loaded images, matching the single-column optimization.
+function renderBucketPairs(buckets, { geoCode, assetsPrefix, showGeoFlag, lang }) {
+  if (!buckets.length) return '<p>No data for the last 24 hours.</p>';
+  let html = '<div class="bucket-pairs">';
+  for (const b of buckets) {
+    html += renderBucket(b, { geoCode, assetsPrefix, showGeoFlag, lang });
+  }
+  html += '</div>';
+  return html;
 }
 
-export function homePage({ items, availableDates = [], geoCode = 'WW' }) {
+function renderBucket(b, { geoCode, assetsPrefix, showGeoFlag, lang }) {
+  const cards = renderTieredGrid(b.items, {
+    geoCode, assetsPrefix, showGeoFlag, lang,
+  });
+  return `<section class="bucket" id="bucket-${escAttr(b.label)}">
+  <h2 class="section-title">${escape(b.label)}</h2>
+  ${cards || '<p>No data for this time slot.</p>'}
+</section>`;
+}
+
+// In-page anchor pills that jump to each time-slot section. Placed right under
+// the date nav on the "last 24 hours" view so users can hop between hours.
+function buildBucketAnchors(buckets) {
+  if (!buckets || !buckets.length) return '';
+  const pills = buckets.map((b) =>
+    `<a class="bucket-anchor" href="#bucket-${escAttr(b.label)}">${escape(b.label)}</a>`);
+  return `<nav class="bucket-anchors" aria-label="Jump to time slot">${pills.join('')}</nav>`;
+}
+
+export function homePage({ buckets = [], availableDates = [], geoCode = 'WW' }) {
   const geoMeta = GEO_BY_CODE[geoCode] || GEO_BY_CODE.WW;
   const isWW = geoCode === 'WW';
   // WW is always the English summary view
   const renderLang = 'en';
 
-  // Single "last 24 hours" aggregated list (already aggregated by build.js),
-  // progressively revealed in tiers (first 20, then 21-50, then 51-100).
-  const listHtml = renderTieredGrid(items, {
+  // Single vertical column of 4-hour time buckets (newest-first):
+  // 1h ago, 5h ago, 9h ago, ... up to the last 24h, each in its own column.
+  const listHtml = renderBucketPairs(buckets, {
     geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang,
   });
 
-  // Older-date navigation placed after the list: date pills + datepicker
-  const olderDateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
+  // Total number of trending topics shown (across all buckets) for the subtitle.
+  const totalItems = buckets.reduce((n, b) => n + b.items.length, 0);
+
+  // Older-date navigation placed ABOVE the list, matching the geo pages.
+  const dateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
+
+  // In-page "x hours ago" jump pills (only on the last-24h view).
+  const bucketAnchors = buildBucketAnchors(buckets);
 
   const titleFlag = flagHtml(geoCode, geoMeta.name);
   const h1 = `${geoMeta.name} Google Trends for last 24 hours`;
+  const sub = `Top ${roundTopN(totalItems)} searches`;
+
+  // SEO description for the Worldwide / geo home page.
+  const desc = isWW
+    ? `See the top Google Trends Worldwide right now. Discover what's trending on Google today across the world — ${roundTopN(totalItems)} trending searches with AI-written summaries.`
+    : `See the top Google Trends in ${geoMeta.name} right now. Discover what's trending on Google today in ${geoMeta.name} — ${roundTopN(totalItems)} trending searches with AI-written summaries.`;
+
+  // JSON-LD: ItemList + BreadcrumbList for rich results (union of bucket items).
+  const allItems = buckets.flatMap((b) => b.items).slice(0, 100);
+  const itemListJson = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    name: h1,
+    itemListElement: allItems.map((t, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: t.keyword,
+      url: `${SITE_BASE}/geo/${geoCode}/${keywordHref(t.keyword)}`,
+    })),
+  });
+  const crumbJson = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [{ '@type': 'ListItem', position: 1, name: 'Home', item: `${SITE_BASE}/` }],
+  });
+  const jsonLd = itemListJson + ',' + crumbJson;
+
   const body = `
   <h1 class="page-title">
     <span class="flag">${titleFlag}</span>
     <span>${escape(h1)}</span>
   </h1>
-  <p class="page-sub">${escape(`Top ${roundTopN(items.length)} searches`)}</p>
-  ${listHtml}
-  ${olderDateNav}`;
+  <p class="page-sub">${escape(sub)}</p>
+  ${dateNav}
+  ${bucketAnchors}
+  ${listHtml}`;
 
   return layout({
     title: h1,
@@ -877,6 +1021,8 @@ export function homePage({ items, availableDates = [], geoCode = 'WW' }) {
     assetsPrefix: '',
     bodyHtml: body,
     canonicalPath: '/',
+    description: desc,
+    jsonLd,
   });
 }
 
