@@ -61,9 +61,10 @@ SELECT t.date, t.geo, t.keyword, t.search_volume_num, t.search_volume_raw,
  WHERE t.rn = 1
  ORDER BY t.geo, t.date DESC, t.search_volume_num DESC`;
 
-// Raw snapshots from the last 48h (no per-day peak merging), used to aggregate
-// the WW homepage into 4h collection buckets. Each bucket takes all geos'
-// snapshots in that 4h window, deduped by keyword across geos (highest volume wins).
+// Raw snapshots from the last 24h (no per-day peak merging), used to aggregate
+// the WW homepage and each geo latest page into a single "last 24 hours" view.
+// Within the window we keep the peak search volume per keyword (multiple 4h
+// collection points collapse into one daily value).
 const RECENT_BUCKETS_SQL = `
 SELECT s.observed_at, s.geo, s.query AS keyword,
        s.search_volume AS search_volume_num,
@@ -130,8 +131,9 @@ for (const [geo, m] of byGeoDate.entries()) {
   latestDate.set(geo, dates[0]);
 }
 
-// Raw 48h snapshots: shared by the WW homepage and each geo latest page's 4h columns, queried once.
-const recentCutoff = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+// Raw 24h snapshots: shared by the WW homepage and each geo latest page's daily
+// aggregation, queried once.
+const recentCutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
 const recentRows = await queryAll(RECENT_BUCKETS_SQL, [recentCutoff]);
 // Group by geo so each geo latest page can build its 4h columns.
 const recentByGeo = new Map();
@@ -141,12 +143,9 @@ for (const r of recentRows) {
 }
 console.log(`Loaded ${recentRows.length} recent (48h) snapshot rows for hours-columns.`);
 
-// 2. Home page — Worldwide, with per-bucket time-ago sections ---------------
-// WW cannot be scraped directly. Aggregate by 4h collection bucket instead: each bucket
-// takes all geos' snapshots in that 4h window, deduped by keyword across geos (highest
-// volume wins), sorted by search volume desc. The homepage shows the "latest bucket" TOP N
-// as the main list, then appends several earlier buckets (4h ago / 8h ago / ... / Yesterday)
-// as time-ago sections, with the datebar linking to older date pages.
+// 2. Home page — Worldwide, aggregated to a single "last 24 hours" view ------
+// WW cannot be scraped directly. Aggregate the last 24h of snapshots across all geos:
+// dedupe by keyword (highest volume wins) and keep the peak value per keyword.
 const wwHome = await buildWwHomepage(byGeoDate, recentRows);
 await maybeWrite(
   join(OUT, 'index.html'),
@@ -154,12 +153,10 @@ await maybeWrite(
     items: wwHome.latestItems,
     geoCode: 'WW',
     availableDates: wwHome.wwDates,
-    latestTimeIso: wwHome.latestTimeIso,
-    sections: wwHome.agoSections,
   }),
 );
 console.log(
-  `  WW: ${wwHome.latestItems.length} latest + ${wwHome.agoSections.length} time-ago sections, ${wwHome.wwDates.length} historical dates`,
+  `  WW: ${wwHome.latestItems.length} latest-day topics, ${wwHome.wwDates.length} historical dates`,
 );
 
 // 2b. Static content pages
@@ -186,20 +183,38 @@ for (const g of GEOS) {
 
   for (let i = 0; i < dates.length; i += 1) {
     const date = dates[i];
-    const trends = m.get(date);
+    // Historical date pages only show the unified top 100 keywords.
+    const trends = m.get(date).slice(0, 100);
     const isLatest = i === 0;
     let html;
+
+    if (g.code === 'WW') {
+      // Worldwide latest is owned by the homepage (index.html); mirror it at
+      // geo/WW/index.html and generate the historical date pages below.
+      if (isLatest) {
+        html = homePage({
+          items: wwHome.latestItems,
+          geoCode: 'WW',
+          availableDates: wwHome.wwDates,
+        });
+        await maybeWrite(join(OUT, 'geo', 'WW', 'index.html'), html);
+      } else {
+        html = geoPage({ geoMeta: g, date, isLatest: false, trends, availableDates: dates });
+        await maybeWrite(join(OUT, 'geo', 'WW', `${date}.html`), html);
+      }
+      continue;
+    }
+
     if (isLatest) {
-      // Latest geo page: 4h columns (latest + 6 time-ago), sourced from the last 48h snapshots.
-      // Falls back to the single per-day peak column when no 48h data is available.
-      const gb = buildGeoBucketsFromRows(recentByGeo.get(g.code) || [], g.lang);
-      const hasRecent = gb.latestItems.length > 0;
+      // Latest geo page: aggregate the last 24h into a single day view (peak per
+      // keyword), ranked by search volume. Falls back to the per-day peak column
+      // when no 24h snapshot data is available.
+      const dayItems = aggregateDayGeo(recentByGeo.get(g.code) || [], g.lang);
+      const latestTrends = dayItems.length > 0 ? dayItems : trends;
       html = geoPage({
         geoMeta: g, date, isLatest: true,
-        trends: hasRecent ? gb.latestItems : trends,
+        trends: latestTrends,
         availableDates: dates,
-        sections: hasRecent ? gb.agoSections : [],
-        latestTimeIso: hasRecent ? gb.latestTimeIso : undefined,
         lang: g.lang,
       });
     } else {
@@ -257,138 +272,61 @@ function sha1(input) {
   return createHash('sha1').update(input).digest('hex');
 }
 
-// Aggregate the WW homepage into 4h UTC buckets. Returns:
-//   latestItems  — TOP N of the latest bucket (homepage main list)
-//   latestTime   — max observed_at in the latest bucket, minute-precision, e.g. "2026-08-01 18:35"
-//   latestTimeIso— same value as ISO (for client-side timezone rewriting)
-//   latestDate   — local date of the latest bucket (YYYY-MM-DD, for datebar highlight)
-//   agoSections  — a few earlier buckets, each TOP M, labeled "4 hours ago" … "Yesterday"
-//   wwDates      — union of all geo dates (for datebar links to older dates)
+// Aggregate the WW homepage into a single "last 24 hours" view. Returns:
+//   latestItems  — peak-volume keywords across all geos over the last 24h, ranked
+//   wwDates      — union of all geo dates (for the date picker links to older dates)
 async function buildWwHomepage(byGeoDate, recentRows) {
-  const rows = recentRows;
-
-  // Group into 4h buckets (aligned to cron 0/4/8/12/16/20 UTC)
-  const byBucket = new Map();
-  for (const r of rows) {
-    const key = bucketKey(r.observed_at);
-    if (!byBucket.has(key)) byBucket.set(key, []);
-    byBucket.get(key).push(r);
-  }
-  const bucketKeys = [...byBucket.keys()].sort((a, b) => (a < b ? 1 : -1));
-
-  // Aggregate WW per bucket (dedupe by keyword across geos, keep highest volume)
-  const perBucket = bucketKeys.map((k) => {
-    const raw = byBucket.get(k);
-    const latestObs = raw.map((r) => r.observed_at).sort().pop();
-    return { bucketKey: k, latestObs, items: aggregateWwBucket(raw, 100) };
-  });
-
-  const latest = perBucket[0];
-  const latestItems = latest
-    ? latest.items.slice(0, 100).map((it, i) => ({ ...it, rank: i + 1 }))
-    : [];
-  const latestTimeIso = latest?.latestObs ?? new Date().toISOString();
-
-  // Latest 6 earlier buckets → time-ago sections (4h/8h/12h/16h/20h/24h ago; 24h labeled "Yesterday")
-  const agoSections = [];
-  for (let off = 1; off <= 6; off += 1) {
-    const b = perBucket[off];
-    if (!b) break;
-    const hours = off * 4;
-    const label = hours >= 24 ? 'Yesterday' : `${hours} hours ago`;
-    const items = b.items.slice(0, 100).map((it, i) => ({ ...it, rank: i + 1 }));
-    // latestObs = newest observed_at in the bucket (ISO), used by the client to compute "X hours ago"
-    agoSections.push({ label, items, obsIso: b.latestObs });
-  }
-
+  const latestItems = aggregateDayWw(recentRows).map((it, i) => ({ ...it, rank: i + 1 }));
   const wwDates = [...new Set(
     [...byGeoDate.values()].flatMap((m) => [...m.keys()])
   )].sort((a, b) => (a < b ? 1 : -1));
-
-  return { latestItems, latestTimeIso, agoSections, wwDates };
+  return { latestItems, wwDates };
 }
 
-// Aggregate WW within a single 4h bucket across geos: dedupe by normalized keyword (keep
-// highest volume), sort by search volume desc, take TOP N. Use the English summary
-// (intro_en, falling back to intro).
-function aggregateWwBucket(rows, topN) {
+// Aggregate WW over a 24h window across geos: dedupe by normalized keyword (keep
+// the highest volume seen in the window) and sort by search volume desc.
+// Use the English summary (intro_en, falling back to intro) for the single WW page.
+function aggregateDayWw(rows) {
   const byKey = new Map();
   for (const it of rows) {
     if (it.geo === 'WW') continue;
-    const key = (it.keyword || '').toString().toLowerCase().trim();
+    const key = normKeyword(it.keyword);
     if (!key) continue;
     const prev = byKey.get(key);
-    if (!prev || (it.search_volume_num ?? 0) > (prev.search_volume_num ?? 0)) {
-      byKey.set(key, it);
-    }
+    if (!prev || vol(it) > vol(prev)) byKey.set(key, it);
   }
   return [...byKey.values()]
-    .sort((a, b) => (b.search_volume_num ?? 0) - (a.search_volume_num ?? 0))
-    .slice(0, topN)
+    .sort((a, b) => vol(b) - vol(a))
+    .slice(0, 100)
     .map((it) => ({ ...it, intro: it.intro_en || it.intro || null }));
 }
 
-// 4h columns for a single geo: latest + 6 time-ago buckets.
-// Unlike WW: no cross-geo aggregation; each bucket is just that geo's snapshots in the 4h
-// window (deduped by keyword, highest volume kept).
+// Aggregate a single geo's last 24h into one day: dedupe by normalized keyword
+// (keep the peak volume across the 4h collection points), sort by volume desc.
 // Pick intro by render language (en → intro_en falling back to intro; otherwise intro).
-function buildGeoBucketsFromRows(rows, lang) {
-  const byBucket = new Map();
-  for (const r of rows) {
-    const key = bucketKey(r.observed_at);
-    if (!byBucket.has(key)) byBucket.set(key, []);
-    byBucket.get(key).push(r);
-  }
-  const bucketKeys = [...byBucket.keys()].sort((a, b) => (a < b ? 1 : -1));
-  const perBucket = bucketKeys.map((k) => {
-    const raw = byBucket.get(k);
-    const latestObs = raw.map((r) => r.observed_at).sort().pop();
-    const items = dedupGeoBucket(raw).map((it) => ({ ...it, intro: pickIntro(it, lang) }));
-    return { latestObs, items };
-  });
-  const latest = perBucket[0];
-  const latestItems = latest ? latest.items.map((it, i) => ({ ...it, rank: i + 1 })) : [];
-  const latestTimeIso = latest?.latestObs ?? new Date().toISOString();
-  const agoSections = [];
-  for (let off = 1; off <= 6; off += 1) {
-    const b = perBucket[off];
-    if (!b) break;
-    const hours = off * 4;
-    const label = hours >= 24 ? 'Yesterday' : `${hours} hours ago`;
-    const items = b.items.map((it, i) => ({ ...it, rank: i + 1 }));
-    agoSections.push({ label, items, obsIso: b.latestObs });
-  }
-  return { latestItems, latestTimeIso, agoSections };
-}
-
-// Within a single 4h bucket, dedupe by normalized keyword (keep highest volume), sort by search volume desc.
-function dedupGeoBucket(rows) {
+function aggregateDayGeo(rows, lang) {
   const byKey = new Map();
   for (const it of rows) {
-    const key = (it.keyword || '').toString().toLowerCase().trim();
+    const key = normKeyword(it.keyword);
     if (!key) continue;
     const prev = byKey.get(key);
-    if (!prev || (it.search_volume_num ?? 0) > (prev.search_volume_num ?? 0)) {
-      byKey.set(key, it);
-    }
+    if (!prev || vol(it) > vol(prev)) byKey.set(key, it);
   }
-  return [...byKey.values()].sort((a, b) => (b.search_volume_num ?? 0) - (a.search_volume_num ?? 0));
+  return [...byKey.values()]
+    .sort((a, b) => vol(b) - vol(a))
+    .slice(0, 100)
+    .map((it) => ({ ...it, intro: pickIntro(it, lang) }));
+}
+
+function normKeyword(k) {
+  return (k || '').toString().toLowerCase().trim();
+}
+
+function vol(it) {
+  return it.search_volume_num ?? 0;
 }
 
 function pickIntro(it, lang) {
   if (lang === 'en') return it.intro_en || it.intro || null;
   return it.intro || null;
-}
-
-// Map observed_at (ISO) to a 4h-aligned bucket key "YYYY-MM-DD HH:00" (UTC).
-// Cron runs at 0/4/8/12/16/20 UTC; each geo's observed_at falls inside its 4h window.
-function bucketKey(observedAtIso) {
-  const d = new Date(observedAtIso);
-  const h = d.getUTCHours();
-  const bh = h - (h % 4);
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  const hh = String(bh).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd} ${hh}:00`;
 }

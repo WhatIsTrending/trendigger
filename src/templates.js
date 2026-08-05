@@ -245,7 +245,7 @@ ${alternateTags}
           <svg class="caret" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
         </button>
         <div class="region-menu" id="regionMenu" role="listbox" hidden>
-          <input class="region-search" type="search" placeholder="Search country…" autocomplete="off" id="regionSearch">
+          <input class="region-search" type="search" placeholder="Search locations…" autocomplete="off" id="regionSearch">
           <div class="region-list">${regionOptions}</div>
         </div>
       </div>
@@ -344,6 +344,36 @@ ${bodyHtml}
   document.addEventListener('click', function(e){ if(!picker.contains(e.target)) toggle(false); });
   document.addEventListener('keydown', function(e){ if(e.key==='Escape') toggle(false); });
 })();
+// Progressive reveal: expand a folded tier and eagerly load its (lazy) images.
+function revealTier(id, btn){
+  var tier = document.getElementById(id);
+  if(!tier) return;
+  tier.hidden = false;
+  tier.querySelectorAll('img.lazy-img[data-src]').forEach(function(im){
+    im.src = im.dataset.src; im.removeAttribute('data-src');
+  });
+  if(btn) btn.style.display = 'none';
+}
+// Lazy-load images: defer fetching until they approach the viewport. Images inside
+// still-hidden tiers are not observed (and revealTier() loads them on expand).
+(function(){
+  var imgs = document.querySelectorAll('img.lazy-img[data-src]');
+  if(!imgs.length) return;
+  if(!('IntersectionObserver' in window)){
+    imgs.forEach(function(im){ im.src = im.dataset.src; im.removeAttribute('data-src'); });
+    return;
+  }
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){
+        var im = e.target;
+        im.src = im.dataset.src; im.removeAttribute('data-src');
+        io.unobserve(im);
+      }
+    });
+  }, { rootMargin: '300px 0px' });
+  imgs.forEach(function(im){ io.observe(im); });
+})();
 </script>
 </body>
 </html>
@@ -390,7 +420,7 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
          <ul>
            ${news.slice(0, 5).map((n) => {
              const src = n.sources?.length ? n.sources.join(', ') : '';
-             const pic = n.picture ? `<img src="${escAttr(n.picture)}" alt="" loading="lazy" onerror="this.remove()">` : '';
+             const pic = n.picture ? `<img class="lazy-img" data-src="${escAttr(n.picture)}" alt="" loading="lazy" onerror="this.remove()">` : '';
              return `<li>
                ${pic}
                <a href="${escAttr(n.url || '#')}" rel="noopener" target="_blank">${escape(n.title)}</a>
@@ -416,7 +446,7 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
   <div class="head">
     <div class="thumb">
       ${hasPic
-        ? `<img src="${escAttr(t.picture)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`
+        ? `<img class="lazy-img" data-src="${escAttr(t.picture)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`
         : initial}
     </div>
     <div class="head-text">
@@ -460,7 +490,7 @@ function safeJson(s, fb) { try { return JSON.parse(s); } catch { return fb; } }
  * @param {string[]} o.availableDates - for nav (most recent first)
  * @param {string} [o.lang]    - render language ('en' or geoMeta.lang)
  */
-export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang, sections = [], latestTimeIso }) {
+export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang }) {
   const assetsPrefix = '../../';
   const flag = flagHtml(geoMeta.code, geoMeta.name);
   const renderLang = lang || geoMeta.lang;
@@ -476,63 +506,34 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang,
 
   const dateNav = buildDateNav(availableDates, date, isLatest, '', renderLang);
   const showGeoFlag = geoMeta.code === 'WW';
-  const useHoursView = sections && sections.length > 0;
 
-  // Latest geo page uses a 4h horizontal layout (latest + time-ago buckets); historical date pages keep a single column with show-more.
-  let listHtml;
-  if (useHoursView) {
-    const buckets = [
-      { label: 'Latest', obsIso: latestTimeIso, items: trends },
-      ...sections.map((s) => ({ label: s.label, obsIso: s.obsIso, items: s.items })),
-    ];
-    listHtml = `<div class="time-columns">${renderTimeColumns(buckets, { geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang })}</div>`;
-  } else {
-    const showCount = 50;
-    const hasMore = trends.length > showCount;
-    const visibleTrends = hasMore ? trends.slice(0, showCount) : trends;
-    const hiddenTrends = hasMore ? trends.slice(showCount) : [];
-    const cards = visibleTrends
-      .map((t) => trendCard({ trend: t, geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang }))
-      .join('\n');
-    const moreCards = hasMore
-      ? hiddenTrends
-          .map((t) => trendCard({ trend: t, geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang }))
-          .join('\n')
-      : '';
-    const moreSection = hasMore
-      ? `<div class="more-trends" id="more-trends" style="display:none;">${moreCards}</div>
-         <button class="btn-show-more" onclick="(function(btn){
-           var more = document.getElementById('more-trends');
-           if (more.style.display === 'none') {
-             more.style.display = 'contents';
-             btn.textContent = 'Show less';
-           } else {
-             more.style.display = 'none';
-             btn.textContent = 'Show all ${trends.length} trends';
-             window.scrollTo({top: btn.offsetTop - 100, behavior:'smooth'});
-           }
-         })(this)">Show all ${trends.length} trends &darr;</button>`
-      : '';
-    listHtml = `<div class="trend-grid">${cards || '<p>No data for this date.</p>'}</div>${moreSection}`;
-  }
+  // Both latest ("last 24 hours", already aggregated to a single day) and
+  // historical date pages render a single column of trend cards, progressively
+  // revealed in tiers (first 20, then 21-50, then 51-100) for fast initial load.
+  const listHtml = renderTieredGrid(trends, {
+    geoCode: geoMeta.code,
+    assetsPrefix,
+    showGeoFlag,
+    lang: renderLang,
+  });
 
-  const sub = useHoursView
-    ? `Top ${trends.length} trending searches per 4-hour window · updated every 4h.`
-    : `${isLatest ? 'Latest update' : 'Historical snapshot'} for <strong>${escape(date)}</strong> · ${trends.length} trending topics.`;
+  // SEO-friendly title + subtitle. Latest = "for last 24 hours"; historical = "for YYYY-MM-DD".
+  const titleDate = isLatest ? 'last 24 hours' : date;
+  const h1 = `${geoMeta.name} Google Trends for ${titleDate}`;
+  const sub = `Top ${roundTopN(trends.length)} searches`;
 
   const body = `
   <h1 class="page-title">
     <span class="flag">${flag}</span>
-    <span>${escape(geoMeta.name)} Google Trends</span>
+    <span>${escape(h1)}</span>
   </h1>
-  <p class="page-sub">${sub}</p>
-  <nav class="region-bar" aria-label="Switch region">${regionBar(geoMeta.code, assetsPrefix)}</nav>
+  <p class="page-sub">${escape(sub)}</p>
   ${langSwitch}
   ${dateNav}
   ${listHtml}`;
 
   return layout({
-    title: `${geoMeta.name} Trends – ${date}`,
+    title: h1,
     lang: renderLang,
     assetsPrefix,
     bodyHtml: body,
@@ -541,23 +542,53 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang,
   });
 }
 
-// ---------------------------------------------------------------------------
-// Region switcher bar — shared by home page and geo pages
-
-/**
- * @param {string} currentGeoCode - highlighted geo code (matches the current page)
- * @param {string} assetsPrefix  - path prefix relative to the site root, e.g. '../../'
- */
-function regionBar(currentGeoCode, assetsPrefix) {
-  return GEOS.map((g) => {
-    const flag = flagHtml(g.code, g.name);
-    const href = g.code === 'WW'
-      ? `${assetsPrefix}index.html`
-      : `${assetsPrefix}geo/${g.code}/index.html`;
-    const cls = g.code === currentGeoCode ? 'region-pill current' : 'region-pill';
-    return `<a class="${cls}" href="${href}">${flag} ${escape(g.name)}</a>`;
-  }).join('');
+// Round the number of trends shown in the subtitle to a clean, SEO-friendly
+// bucket: 1-10 -> 10, 11-20 -> 20, 21-30 -> 30, 31-50 -> 50, 51+ -> 100.
+function roundTopN(n) {
+  if (n <= 10) return 10;
+  if (n <= 20) return 20;
+  if (n <= 30) return 30;
+  if (n <= 50) return 50;
+  return 100;
 }
+
+// Progressive ("show more") grid: render the first 20 cards inline, then fold the
+// rest into collapsible tiers (21-50, 51-100). Each tier is hidden until the user
+// expands it, so its images are never fetched until then. Images inside the visible
+// tier are still lazy-loaded by the IntersectionObserver in layout().
+// Steps can be expanded multiple times: 20 -> 50 -> 100.
+function renderTieredGrid(trends, opts) {
+  const total = trends.length;
+  if (total === 0) return '<p>No data for this date.</p>';
+
+  const cardsHtml = (from, to) =>
+    trends
+      .slice(from, to)
+      .map((t) => trendCard({ trend: t, ...opts }))
+      .join('\n');
+
+  const firstStep = Math.min(20, total);
+  let html = `<div class="trend-grid">${cardsHtml(0, firstStep)}</div>`;
+
+  // Subsequent tiers (each collapsible) and their reveal buttons.
+  const moreSteps = [50, 100].filter((s) => s <= total);
+  let from = firstStep;
+  for (const to of moreSteps) {
+    const tierId = `tier-${to}`;
+    const remaining = total - from;
+    const btnLabel = `Show ${remaining} more &darr;`;
+    html += `<div class="tier" id="${tierId}" hidden>
+      <div class="trend-grid">${cardsHtml(from, to)}</div>
+    </div>
+    <button class="btn-show-more" type="button" onclick="revealTier('${tierId}', this)">${btnLabel}</button>`;
+    from = to;
+  }
+
+  return html;
+}
+
+// ---------------------------------------------------------------------------
+// Date navigation
 
 function buildDateNav(dates, current, isLatest, dateHrefPrefix = '', lang) {
   if (!dates || !dates.length) return '';
@@ -814,39 +845,34 @@ function renderTimeColumns(buckets, { geoCode, assetsPrefix, showGeoFlag, lang }
   }).join('');
 }
 
-export function homePage({ items, availableDates = [], geoCode = 'WW', latestTimeIso, sections = [] }) {
+export function homePage({ items, availableDates = [], geoCode = 'WW' }) {
   const geoMeta = GEO_BY_CODE[geoCode] || GEO_BY_CODE.WW;
   const isWW = geoCode === 'WW';
   // WW is always the English summary view
   const renderLang = 'en';
 
-  // All time buckets: latest + earlier time-ago sections, shown side by side
-  const buckets = [
-    { label: 'Latest', obsIso: latestTimeIso, items },
-    ...sections.map((s) => ({ label: s.label, obsIso: s.obsIso, items: s.items })),
-  ];
+  // Single "last 24 hours" aggregated list (already aggregated by build.js),
+  // progressively revealed in tiers (first 20, then 21-50, then 51-100).
+  const listHtml = renderTieredGrid(items, {
+    geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang,
+  });
 
-  // All buckets side by side: each column renders the full TOP 100; CSS content-visibility skips off-screen cards
-  const sectionsHtml = renderTimeColumns(buckets, { geoCode, assetsPrefix: '', showGeoFlag: true, lang: renderLang });
-
-  // Older-date navigation placed after all buckets: date pills + datepicker
+  // Older-date navigation placed after the list: date pills + datepicker
   const olderDateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
 
   const titleFlag = flagHtml(geoCode, geoMeta.name);
+  const h1 = `${geoMeta.name} Google Trends for last 24 hours`;
   const body = `
   <h1 class="page-title">
     <span class="flag">${titleFlag}</span>
-    <span>${escape(geoMeta.name)} Google Trends</span>
+    <span>${escape(h1)}</span>
   </h1>
-  <p class="page-sub">
-    Top ${items.length} trending searches per 4-hour window · updated every 4h.
-  </p>
-  <nav class="region-bar" aria-label="Switch region">${regionBar(geoCode, '')}</nav>
-  <div class="time-columns">${sectionsHtml}</div>
+  <p class="page-sub">${escape(`Top ${roundTopN(items.length)} searches`)}</p>
+  ${listHtml}
   ${olderDateNav}`;
 
   return layout({
-    title: isWW ? 'Worldwide Google Trends — TOP 100' : `${geoMeta.name} Google Trends`,
+    title: h1,
     lang: renderLang,
     assetsPrefix: '',
     bodyHtml: body,

@@ -93,6 +93,14 @@ jobs:
         if: ${{ inputs.skip_enrich != true }}
         run: node src/enrich.js
 
+      - name: Backfill missing English translations
+        # Translate any keyword_intro rows where intro exists but intro_en is NULL.
+        # Idempotent: after the first run fills all NULLs, subsequent runs find nothing to do.
+        # Covers historical rows that missed translation due to auto-detect misfires
+        # (now fixed via explicit from=localLang in translate.js).
+        if: ${{ inputs.skip_enrich != true }}
+        run: node src/enrich.js --backfill-en
+
       - name: Prune (delete snapshots older than 365 days)
         run: node src/prune.js --days 365
 
