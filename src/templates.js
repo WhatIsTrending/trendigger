@@ -538,9 +538,6 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang,
         geoCode: geoMeta.code, assetsPrefix, showGeoFlag, lang: renderLang,
       });
 
-  // In-page "x hours ago" jump pills (only on the last-24h view).
-  const bucketAnchors = isLatest ? buildBucketAnchors(buckets) : '';
-
   // SEO-friendly title + subtitle. Latest = "for last 24 hours"; historical = "for YYYY-MM-DD".
   const titleDate = isLatest ? 'last 24 hours' : date;
   const h1 = `${geoMeta.name} Google Trends for ${titleDate}`;
@@ -589,7 +586,6 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang,
   ${prose}
   ${langSwitch}
   ${dateNav}
-  ${bucketAnchors}
   ${listHtml}`;
 
   return layout({
@@ -929,30 +925,28 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
 function renderBucketPairs(buckets, { geoCode, assetsPrefix, showGeoFlag, lang }) {
   if (!buckets.length) return '<p>No data for the last 24 hours.</p>';
   let html = '<div class="bucket-pairs">';
-  for (const b of buckets) {
-    html += renderBucket(b, { geoCode, assetsPrefix, showGeoFlag, lang });
+  for (let i = 0; i < buckets.length; i++) {
+    const prevId = i > 0 ? `bucket-${escAttr(buckets[i - 1].label)}` : '';
+    const nextId = i < buckets.length - 1 ? `bucket-${escAttr(buckets[i + 1].label)}` : '';
+    html += renderBucket(buckets[i], { geoCode, assetsPrefix, showGeoFlag, lang, prevId, nextId });
   }
   html += '</div>';
   return html;
 }
 
-function renderBucket(b, { geoCode, assetsPrefix, showGeoFlag, lang }) {
+function renderBucket(b, { geoCode, assetsPrefix, showGeoFlag, lang, prevId = '', nextId = '' }) {
   const cards = renderTieredGrid(b.items, {
     geoCode, assetsPrefix, showGeoFlag, lang,
   });
+  const navBtns = `
+    <span class="bucket-nav">
+      <a class="bucket-nav-btn${prevId ? '' : ' is-disabled'}"${prevId ? ` href="#${prevId}"` : ''} aria-label="Previous time slot">&#8592; back</a>
+      <a class="bucket-nav-btn${nextId ? '' : ' is-disabled'}"${nextId ? ` href="#${nextId}"` : ''} aria-label="Next time slot">next &#8594;</a>
+    </span>`;
   return `<section class="bucket" id="bucket-${escAttr(b.label)}">
-  <h2 class="section-title">${escape(b.label)}</h2>
+  <h2 class="section-title">${escape(b.label)}${navBtns}</h2>
   ${cards || '<p>No data for this time slot.</p>'}
 </section>`;
-}
-
-// In-page anchor pills that jump to each time-slot section. Placed right under
-// the date nav on the "last 24 hours" view so users can hop between hours.
-function buildBucketAnchors(buckets) {
-  if (!buckets || !buckets.length) return '';
-  const pills = buckets.map((b) =>
-    `<a class="bucket-anchor" href="#bucket-${escAttr(b.label)}">${escape(b.label)}</a>`);
-  return `<nav class="bucket-anchors" aria-label="Jump to time slot">${pills.join('')}</nav>`;
 }
 
 export function homePage({ buckets = [], availableDates = [], geoCode = 'WW' }) {
@@ -972,9 +966,6 @@ export function homePage({ buckets = [], availableDates = [], geoCode = 'WW' }) 
 
   // Older-date navigation placed ABOVE the list, matching the geo pages.
   const dateNav = isWW ? buildHomeDateNav(availableDates, 'geo/WW/') : '';
-
-  // In-page "x hours ago" jump pills (only on the last-24h view).
-  const bucketAnchors = buildBucketAnchors(buckets);
 
   const titleFlag = flagHtml(geoCode, geoMeta.name);
   const h1 = `${geoMeta.name} Google Trends for last 24 hours`;
@@ -1012,7 +1003,6 @@ export function homePage({ buckets = [], availableDates = [], geoCode = 'WW' }) 
   </h1>
   <p class="page-sub">${escape(sub)}</p>
   ${dateNav}
-  ${bucketAnchors}
   ${listHtml}`;
 
   return layout({

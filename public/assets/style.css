@@ -231,28 +231,32 @@ section.bucket { scroll-margin-top: 80px; }
   flex-direction: column;
   gap: 4px;
 }
-/* 本页时间段锚点跳转按钮：贴在日期导航下方，横排可换行 */
-.bucket-anchors {
-  display: flex;
-  flex-wrap: wrap;
+/* 每个时间段标题右侧的 back / next 跳转按钮 */
+.bucket-nav {
+  display: inline-flex;
   gap: 8px;
-  margin: 4px 0 20px;
-}
-.bucket-anchor {
-  font-size: 0.85rem;
+  margin-left: auto;
+  font-size: 0.8rem;
   font-weight: 600;
+  white-space: nowrap;
+}
+.bucket-nav-btn {
   color: var(--text-secondary);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 6px 14px;
+  padding: 4px 12px;
   text-decoration: none;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.bucket-anchor:hover {
+.bucket-nav-btn:hover {
   color: var(--text);
   border-color: var(--accent, var(--border));
   background: var(--surface-hover, var(--surface));
+}
+.bucket-nav-btn.is-disabled {
+  opacity: 0.4;
+  pointer-events: none;
 }
 /* 视口外卡片跳过 layout/paint，降低长列表首屏渲染成本 */
 .bucket-pairs .card {
@@ -555,6 +559,9 @@ img.lazy-img { background: var(--surface-alt); color: transparent; }
 }
 
 h2.section-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font-size: 17px;
   margin: 28px 0 12px;
   color: var(--text);
