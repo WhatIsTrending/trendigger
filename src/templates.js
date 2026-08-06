@@ -862,7 +862,6 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
   ${shareButtonsHtml}
 
   ${intro ? `<div class="detail-intro"><p>${escape(intro)}</p></div>` : ''}
-  <p class="seo-lede">Why is <strong>${escape(keyword)}</strong> trending on Google? This page tracks <em>${escape(keyword)}</em> in ${escape(geoMeta.name)} — its peak search volume, how many days it has been trending, and the latest related news. Use the timeline above to see when ${escape(keyword)} spiked on Google Trends.</p>
   ${countriesRow}
 
   <div class="stats">
