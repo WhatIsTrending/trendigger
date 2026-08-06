@@ -27,12 +27,16 @@ const USE_MOCK = process.env.MOCK === '1';
 // "Not currently importing anything" is a known wrangler --file issue: the previous
 // import's state wasn't cleaned up, so D1 thinks no import is in progress.
 // "Input file ... missing or invalid" is the same import-state-stuck problem.
+// (10001) "We encountered an internal error. Please try again." is a D1 backend
+// transient failure that usually resolves on a second attempt.
 // See https://community.cloudflare.com/t/wrangler-import-error-not-currently-importing-anything/755655
 const TRANSIENT_ERROR_PATTERNS = [
   'Not currently importing anything',
   'D1 DB is overloaded',
   'D1_INTERNAL_ERROR',
   'Internal error while starting up D1 DB storage',
+  'encountered an internal error. Please try again',
+  '(10001)',
 ];
 const IMPORT_STUCK_REGEX = /Input file .*\.sql missing or invalid/;
 const MAX_RETRIES = 4;
