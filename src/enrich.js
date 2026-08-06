@@ -38,6 +38,7 @@ import { GEOS, GEO_BY_CODE } from './geos.js';
 // These geos always use Google free translation and don't consume Azure quota.
 const EN_GEOS_NEED_EN_INTRO = new Set(['IN']);
 
+async function main() {
 const args = process.argv.slice(2);
 
 const topRaw = argOf('--top');
@@ -164,6 +165,12 @@ if (results.length) {
 }
 
 console.log(`Done. ok=${ok}, fail=${fail}, skipped=${candidates.length - list.length}`);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 
 // ---------------------------------------------------------------------------
 
