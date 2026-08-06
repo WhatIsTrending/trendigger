@@ -422,9 +422,14 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
   // Thumbnail fallback: first letter of the keyword
   const initial = escape((t.keyword || '?').trim().charAt(0).toUpperCase());
   const vol = t.search_volume_raw || formatInt(t.search_volume_num ?? 0);
-  const started = t.started_at
-    ? new Date(t.started_at * 1000).toISOString().slice(11, 16) + ' UTC'
-    : null;
+  const startedTs = Number(t.started_at);
+  let started = null;
+  if (startedTs > 0) {
+    const d = new Date(startedTs * 1000);
+    if (!Number.isNaN(d.getTime())) {
+      started = d.toISOString().slice(11, 16) + ' UTC';
+    }
+  }
   const news = Array.isArray(t.news_json)
     ? t.news_json
     : typeof t.news_json === 'string'
