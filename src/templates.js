@@ -413,7 +413,9 @@ function revealTier(id, btn){
  */
 export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showGeoFlag = false, lang }) {
   const t = trend;
-  const cardGeo = GEO_BY_CODE[geoCode] || {};
+  // On the WW aggregate page each keyword comes from a different geo; use the source geo for links
+  const linkGeo = showGeoFlag && t.geo ? t.geo : geoCode;
+  const cardGeo = GEO_BY_CODE[linkGeo] || {};
   const enVariant = cardGeo.lang && cardGeo.lang !== 'en' && lang === 'en';
   const langSuffix = enVariant ? '?lang=en' : '';
   const hasPic = !!t.picture;
@@ -431,8 +433,15 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
 
   // On the WW aggregate page each keyword comes from a different geo; show the source flag to tell them apart
   // (showGeoFlag is true only on the WW page; false on regular geo pages hides it)
+  // Flag now links to the corresponding country page with a hover tooltip
   const sourceFlag = showGeoFlag && t.geo
-    ? `<span class="geo-flag" title="${escape(t.geo)}">${flagHtml(t.geo)}</span>`
+    ? (() => {
+        const g = GEO_BY_CODE[t.geo];
+        const geoName = g ? g.name : t.geo;
+        const title = `Explore more trends in ${geoName}`;
+        const geoHref = `${assetsPrefix}geo/${t.geo}/index.html`;
+        return `<a class="geo-flag" href="${escAttr(geoHref)}" title="${escAttr(title)}" aria-label="${escAttr(title)}">${flagHtml(t.geo)}</a>`;
+      })()
     : '';
 
   const newsHtml = news.length
@@ -452,10 +461,10 @@ export function trendCard({ trend, geoCode, assetsPrefix, extraClass = '', showG
        </div>`
     : '';
 
-  const detailHref = `${assetsPrefix}geo/${geoCode}/${keywordHref(t.keyword)}${langSuffix}`;
+  const detailHref = `${assetsPrefix}geo/${linkGeo}/${keywordHref(t.keyword)}${langSuffix}`;
   const shareKeywordEncoded = encodeURIComponent(t.keyword);
   const cardGoogleUrl = `https://www.google.com/search?q=${shareKeywordEncoded}`;
-  const cardShareUrl = `${SITE_BASE}/geo/${geoCode}/keyword/${encodeURIComponent(keywordToSlug(t.keyword))}.html${langSuffix}`;
+  const cardShareUrl = `${SITE_BASE}/geo/${linkGeo}/keyword/${encodeURIComponent(keywordToSlug(t.keyword))}.html${langSuffix}`;
   const cardEncodedShareUrl = encodeURIComponent(cardShareUrl);
   const cardShareText = buildShareText({
     keyword: t.keyword,
@@ -560,12 +569,15 @@ export function geoPage({ geoMeta, date, isLatest, trends, availableDates, lang,
     '@context': 'https://schema.org',
     '@type': 'ItemList',
     name: h1,
-    itemListElement: seoItems.slice(0, 100).map((t, i) => ({
-      '@type': 'ListItem',
-      position: i + 1,
-      name: t.keyword,
-      url: `${SITE_BASE}/geo/${geoMeta.code}/${keywordHref(t.keyword)}${enVariant ? '?lang=en' : ''}`,
-    })),
+    itemListElement: seoItems.slice(0, 100).map((t, i) => {
+      const linkGeo = showGeoFlag && t.geo ? t.geo : geoMeta.code;
+      return {
+        '@type': 'ListItem',
+        position: i + 1,
+        name: t.keyword,
+        url: `${SITE_BASE}/geo/${linkGeo}/${keywordHref(t.keyword)}${enVariant ? '?lang=en' : ''}`,
+      };
+    }),
   });
   const crumbJson = JSON.stringify({
     '@context': 'https://schema.org',
@@ -629,16 +641,15 @@ function renderTieredGrid(trends, opts) {
   let html = `<div class="trend-grid">${cardsHtml(0, firstStep)}</div>`;
 
   // Subsequent tiers (each collapsible) and their reveal buttons.
+  // Button label is always just "Show more" regardless of how many items remain.
   const moreSteps = [50, 100].filter((s) => s <= total);
   let from = firstStep;
   for (const to of moreSteps) {
     const tierId = `tier-${to}`;
-    const remaining = total - from;
-    const btnLabel = `Show ${remaining} more &darr;`;
     html += `<div class="tier" id="${tierId}" hidden>
       <div class="trend-grid">${cardsHtml(from, to)}</div>
     </div>
-    <button class="btn-show-more" type="button" onclick="revealTier('${tierId}', this)">${btnLabel}</button>`;
+    <button class="btn-show-more" type="button" onclick="revealTier('${tierId}', this)">Show more &darr;</button>`;
     from = to;
   }
 
@@ -986,7 +997,7 @@ export function homePage({ buckets = [], availableDates = [], geoCode = 'WW' }) 
       '@type': 'ListItem',
       position: i + 1,
       name: t.keyword,
-      url: `${SITE_BASE}/geo/${geoCode}/${keywordHref(t.keyword)}`,
+      url: `${SITE_BASE}/geo/${isWW && t.geo ? t.geo : geoCode}/${keywordHref(t.keyword)}`,
     })),
   });
   const crumbJson = JSON.stringify({
