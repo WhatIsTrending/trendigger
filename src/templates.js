@@ -728,7 +728,6 @@ function buildDateNav(dates, current, isLatest, dateHrefPrefix = '', lang) {
         ? `<span class="current">${escape(d)}</span>`
         : `<a href="${escape(dateHrefPrefix)}${escape(d)}.html${ls}">${escape(d)}</a>`,
     ),
-    dates.length > 8 ? `<a href="archive.html">All ${dates.length} dates &rarr;</a>` : '',
   ].filter(Boolean);
 
   return `<div class="datebar">

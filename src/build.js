@@ -190,16 +190,10 @@ for (const g of GEOS) {
     let html;
 
     if (g.code === 'WW') {
-      // Worldwide latest is owned by the homepage (index.html); mirror it at
-      // geo/WW/index.html and generate the historical date pages below.
-      if (isLatest) {
-        html = homePage({
-          geoCode: 'WW',
-          buckets: wwBuckets,
-          availableDates: wwHome.wwDates,
-        });
-        await maybeWrite(join(OUT, 'geo', 'WW', 'index.html'), html);
-      } else {
+      // Worldwide latest lives on the homepage (/). /geo/WW/ and /geo/WW/index.html
+      // are redirected to / by the Pages Functions (geo/[geo]/index.js).
+      // Only generate the historical date pages here.
+      if (!isLatest) {
         html = geoPage({ geoMeta: g, date, isLatest: false, trends, availableDates: dates });
         await maybeWrite(join(OUT, 'geo', 'WW', `${date}.html`), html);
       }
