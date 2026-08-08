@@ -163,8 +163,9 @@ function buildLangSwitch(geoMeta, lang, basePath) {
  * @param {string} [o.assetsPrefix] - relative path to assets root, e.g. "../../"
  * @param {string} [o.canonicalPath] - path for <link rel="canonical"> (no domain, may include ?lang=en)
  * @param {{hreflang:string,path:string}[]} [o.alternates] - hreflang alternate language versions
+ * @param {string} [o.image] - absolute image URL for og:image / twitter:image
  */
-export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canonicalPath, alternates = [], description, jsonLd } ) {
+export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canonicalPath, alternates = [], description, jsonLd, image } ) {
   const dir = RTL_LANGS.has(lang.split('-')[0]) ? 'rtl' : 'ltr';
   const canonicalUrl = canonicalPath ? SITE_BASE + canonicalPath : SITE_BASE + '/';
   const canonicalTag = `<link rel="canonical" href="${escAttr(canonicalUrl)}">`;
@@ -182,9 +183,11 @@ export function layout({ title, lang = 'en', bodyHtml, assetsPrefix = '', canoni
 <meta property="og:title" content="${escAttr(title)}">
 <meta property="og:description" content="${desc}">
 <meta property="og:url" content="${escAttr(canonicalUrl)}">
-<meta name="twitter:card" content="summary_large_image">
+${image ? `<meta property="og:image" content="${escAttr(image)}">` : ''}
+<meta name="twitter:card" content="${image ? 'summary_large_image' : 'summary'}">
 <meta name="twitter:title" content="${escAttr(title)}">
-<meta name="twitter:description" content="${desc}">`;
+<meta name="twitter:description" content="${desc}">
+${image ? `<meta name="twitter:image" content="${escAttr(image)}">` : ''}`;
   // Structured data (JSON-LD) for rich results; injected as a <script> in <head>.
   // `jsonLd` may contain multiple top-level nodes joined by newlines; wrap them
   // in a JSON array so the block stays valid JSON.
@@ -939,6 +942,7 @@ export function keywordPage({ geoMeta, keyword, intro, history, lang, geoCount =
     alternates,
     description: desc,
     jsonLd,
+    image: latest?.picture || latestNews.find((n) => n.picture)?.picture || undefined,
   });
 }
 
