@@ -32,6 +32,7 @@ import {
   termsPage,
   feedbackPage,
   contactPage,
+  notFoundPage,
 } from './templates.js';
 
 const OUT = 'public';
@@ -165,6 +166,7 @@ await maybeWrite(join(OUT, 'about.html'), aboutPage());
 await maybeWrite(join(OUT, 'terms.html'), termsPage());
 await maybeWrite(join(OUT, 'feedback.html'), feedbackPage());
 await maybeWrite(join(OUT, 'contact.html'), contactPage());
+await maybeWrite(join(OUT, '404.html'), notFoundPage());
 
 // 3. Per-geo pages ---------------------------------------------------------
 

@@ -1285,5 +1285,25 @@ export function contactPage() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 404 Not Found page
+
+export function notFoundPage() {
+  const body = `
+  <div class="static-page" style="text-align:center;padding:60px 20px;">
+    <h1 style="font-size:64px;margin:0 0 8px;color:var(--text);">404</h1>
+    <p style="font-size:18px;color:var(--text-muted);margin:0 0 32px;">Page not found</p>
+    <p style="margin:0 0 32px;">The page you're looking for doesn't exist or may have been moved.</p>
+    <a class="back-link" href="index.html" style="display:inline-block;">&larr; Back to home</a>
+  </div>`;
+
+  return layout({
+    title: '404 · Page not found',
+    lang: 'en',
+    assetsPrefix: '',
+    bodyHtml: body,
+  });
+}
+
 // Helpful export for other callers
 export { keywordToSlug };
