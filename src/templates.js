@@ -365,7 +365,7 @@ ${bodyHtml}
   document.addEventListener('click', function(e){ if(!picker.contains(e.target)) toggle(false); });
   document.addEventListener('keydown', function(e){ if(e.key==='Escape') toggle(false); });
 })();
-// Progressive reveal: expand a folded tier and eagerly load its (lazy) images.
+// Reveal a folded tier and eagerly load its (lazy) images.
 function revealTier(id, btn){
   var tier = document.getElementById(id);
   if(!tier) return;
@@ -375,8 +375,7 @@ function revealTier(id, btn){
   });
   if(btn) btn.style.display = 'none';
 }
-// Lazy-load images: defer fetching until they approach the viewport. Images inside
-// still-hidden tiers are not observed (and revealTier() loads them on expand).
+// Lazy-load images: defer fetching until they approach the viewport.
 (function(){
   var imgs = document.querySelectorAll('img.lazy-img[data-src]');
   if(!imgs.length) return;
@@ -394,6 +393,26 @@ function revealTier(id, btn){
     });
   }, { rootMargin: '300px 0px' });
   imgs.forEach(function(im){ io.observe(im); });
+})();
+// Date picker: navigate to the selected date's page if data exists for it.
+(function(){
+  var inputs = document.querySelectorAll('input[type="date"][data-date-set]');
+  if(!inputs.length) return;
+  inputs.forEach(function(inp){
+    inp.addEventListener('change', function(){
+      var v = inp.value;
+      if(!v) return;
+      var ok = JSON.parse(inp.getAttribute('data-date-set') || '{}');
+      if(!ok[v]){
+        alert('No data for ' + v + '. Available: ' + Object.keys(ok).sort().join(', '));
+        inp.value = inp.getAttribute('data-current') || '';
+        return;
+      }
+      var p = inp.getAttribute('data-href-prefix') || '';
+      var ls = inp.getAttribute('data-lang-suffix') || '';
+      location.href = p + v + '.html' + ls;
+    });
+  });
 })();
 </script>
 </body>
@@ -627,14 +646,24 @@ function roundTopN(n) {
   return 100;
 }
 
-// Progressive ("show more") grid: render the first 20 cards inline, then fold the
-// rest into collapsible tiers (21-50, 51-100). Each tier is hidden until the user
-// expands it, so its images are never fetched until then. Images inside the visible
-// tier are still lazy-loaded by the IntersectionObserver in layout().
-// Steps can be expanded multiple times: 20 -> 50 -> 100.
+// Render all trend cards in a single grid. Images are lazy-loaded by the
+// IntersectionObserver in layout() as they approach the viewport.
 function renderTieredGrid(trends, opts) {
+  if (!trends.length) return '<p>No data for this date.</p>';
+
+  const html = trends
+    .map((t) => trendCard({ trend: t, ...opts }))
+    .join('\n');
+
+  return `<div class="trend-grid">${html}</div>`;
+}
+
+// Render a bucket grid: first 20 cards visible, the rest hidden behind a single
+// "Show more" button. Used on the homepage / geo-latest 4h-bucket columns where
+// each bucket can have up to 100 items and we want a single expand action.
+function renderBucketGrid(trends, opts) {
   const total = trends.length;
-  if (total === 0) return '<p>No data for this date.</p>';
+  if (total === 0) return '<p>No data for this time slot.</p>';
 
   const cardsHtml = (from, to) =>
     trends
@@ -645,17 +674,13 @@ function renderTieredGrid(trends, opts) {
   const firstStep = Math.min(20, total);
   let html = `<div class="trend-grid">${cardsHtml(0, firstStep)}</div>`;
 
-  // Subsequent tiers (each collapsible) and their reveal buttons.
-  // Button label is always just "Show more" regardless of how many items remain.
-  const moreSteps = [50, 100].filter((s) => s <= total);
-  let from = firstStep;
-  for (const to of moreSteps) {
-    const tierId = `tier-${to}`;
+  if (total > firstStep) {
+    const remaining = total - firstStep;
+    const tierId = `tier-bucket-${Math.random().toString(36).slice(2, 8)}`;
     html += `<div class="tier" id="${tierId}" hidden>
-      <div class="trend-grid">${cardsHtml(from, to)}</div>
+      <div class="trend-grid">${cardsHtml(firstStep, total)}</div>
     </div>
-    <button class="btn-show-more" type="button" onclick="revealTier('${tierId}', this)">Show more &darr;</button>`;
-    from = to;
+    <button class="btn-show-more" type="button" onclick="revealTier('${tierId}', this)">Show ${remaining} more &darr;</button>`;
   }
 
   return html;
@@ -682,20 +707,16 @@ function buildDateNav(dates, current, isLatest, dateHrefPrefix = '', lang) {
   // Small JSON map "YYYY-MM-DD" -> true so the picker can reject dates without data.
   const dateSetJs = JSON.stringify(Object.fromEntries(dates.map((d) => [d, 1])));
 
-  // Date picker: inline, no external JS. Accepts only dates that exist in our archive.
+  // Date picker: accepts only dates that exist in our archive. Navigation logic
+  // is handled by the global datepicker initializer in layout() via data attributes.
   const picker = `
     <label class="datepicker" title="Jump to a specific day">
       <input type="date" min="${escape(minDate)}" max="${escape(maxDate)}"
              value="${escape(current)}"
-             onchange="(function(inp){
-               var ok=${dateSetJs};
-               var p=${JSON.stringify(dateHrefPrefix)};
-               var ls=${JSON.stringify(ls)};
-               var v=inp.value;
-               if(!v) return;
-               if(!ok[v]){ alert('No data for '+v+'. Available: '+Object.keys(ok).sort().join(', ')); inp.value='${escape(current)}'; return; }
-               location.href = p + v + '.html' + ls;
-             })(this)">
+             data-date-set='${escAttr(dateSetJs)}'
+             data-href-prefix='${escAttr(dateHrefPrefix)}'
+             data-lang-suffix='${escAttr(ls)}'
+             data-current='${escape(current)}'>
     </label>`;
 
   const pills = [
@@ -950,7 +971,7 @@ function renderBucketPairs(buckets, { geoCode, assetsPrefix, showGeoFlag, lang }
 }
 
 function renderBucket(b, { geoCode, assetsPrefix, showGeoFlag, lang, prevId = '', nextId = '' }) {
-  const cards = renderTieredGrid(b.items, {
+  const cards = renderBucketGrid(b.items, {
     geoCode, assetsPrefix, showGeoFlag, lang,
   });
   const navBtns = `
@@ -1044,14 +1065,8 @@ function buildHomeDateNav(dates, dateHrefPrefix) {
   const picker = `
     <label class="datepicker" title="Jump to a specific day">
       <input type="date" min="${escape(minDate)}" max="${escape(maxDate)}"
-             onchange="(function(inp){
-               var ok=${dateSetJs};
-               var p=${JSON.stringify(dateHrefPrefix)};
-               var v=inp.value;
-               if(!v) return;
-               if(!ok[v]){ alert('No data for '+v+'. Available: '+Object.keys(ok).sort().join(', ')); inp.value=''; return; }
-               location.href = p + v + '.html';
-             })(this)">
+             data-date-set='${escAttr(dateSetJs)}'
+             data-href-prefix='${escAttr(dateHrefPrefix)}'>
     </label>`;
 
   const pills = pillsDates.map((d) =>

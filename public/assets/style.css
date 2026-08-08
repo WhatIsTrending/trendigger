@@ -264,7 +264,7 @@ section.bucket { scroll-margin-top: 80px; }
   contain-intrinsic-size: auto 200px;
 }
 
-/* Show more button */
+/* Show more button (homepage buckets) */
 .btn-show-more {
   display: block;
   margin: 24px auto 0;
@@ -283,6 +283,7 @@ section.bucket { scroll-margin-top: 80px; }
   border-color: var(--accent);
   color: var(--accent);
 }
+
 .hidden-trend {
   display: none;
 }
